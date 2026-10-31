@@ -26,7 +26,28 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -e .
 ```
 
-推荐使用 CUDA 环境训练。CPU 仅适合数据检查、代码验证和小规模 smoke run。
+Windows NVIDIA GPU users must replace the CPU PyTorch wheel with the official
+CUDA wheel:
+
+```powershell
+.venv\Scripts\python.exe -m pip install --upgrade torch torchvision torchaudio `
+  --index-url https://download.pytorch.org/whl/cu128
+```
+
+也可以直接使用仓库中的 CUDA 依赖清单：
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-cuda-cu128.txt
+```
+
+Verify the device before training:
+
+```powershell
+.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+If the first output is `False`, do not start a formal GPU experiment. CPU is
+appropriate only for data checks, code validation, and small smoke runs.
 
 ## 数据准备
 
@@ -60,6 +81,10 @@ python -m venv .venv
   --device auto `
   --output artifacts\segmentation
 ```
+
+RTX 4060 Laptop users should start with `--batch-size 2` for segmentation.
+If CUDA memory is insufficient, use `--batch-size 1`; keep `image-size 256`
+for the final comparison unless the experiment explicitly studies resolution.
 
 输出：
 
