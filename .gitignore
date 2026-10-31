@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Dataset and generated artifacts
+data/*
+*.egg-info/
+*.zip
+*.tar.gz
+.DS_Store
+artifacts/
+checkpoints/
+
+# Experiment outputs
+*.pt
+*.pth
+*.log
+
+# IDE files
+.vscode/
+.idea/
