@@ -159,6 +159,28 @@ loss combines cross-entropy and Dice loss; classification uses cross-entropy.
 The raw classifier is the baseline, while guided classification first uses a
 frozen U-Net to produce a soft foreground mask.
 
+### 断点续训
+
+每个 epoch 结束后，训练脚本会保存 `last.pt`，其中包含模型参数、
+optimizer 状态、当前 epoch、最佳指标和 history。正式任务中断后，可用：
+
+```powershell
+.venv\Scripts\python.exe scripts\train_segmentation.py `
+  --resume artifacts\segmentation\last.pt `
+  --epochs 20 --batch-size 8 --image-size 256 --device cuda `
+  --output artifacts\segmentation
+
+.venv\Scripts\python.exe scripts\train_classification.py `
+  --mode raw `
+  --resume artifacts\classification\raw\last.pt `
+  --epochs 20 --batch-size 16 --image-size 256 --device cuda `
+  --output artifacts\classification\raw
+```
+
+`--epochs` is the final epoch number, not the number of additional epochs.
+An older `best.pt` without optimizer state can still be loaded as a warm start,
+but it is not an exact optimizer-level resume.
+
 ### 小规模 smoke run
 
 不应将 smoke 结果写入报告最终结果。它只用于检查代码链路：

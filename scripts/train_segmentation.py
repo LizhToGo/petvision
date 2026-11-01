@@ -24,6 +24,23 @@ def _device(value: str) -> torch.device:
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(value)
 
+def _load_resume(
+    path: Path,
+    model: UNet,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> tuple[int, float, list[dict[str, object]]]:
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["model_state"])
+    if "optimizer_state" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+    else:
+        print("resume checkpoint has no optimizer state; restarting optimizer")
+    start_epoch = int(checkpoint.get("epoch", 0)) + 1
+    best_miou = float(checkpoint.get("best_miou", -1.0))
+    history = list(checkpoint.get("history", []))
+    return start_epoch, best_miou, history
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -42,6 +59,12 @@ def main() -> None:
         type=int,
         default=0,
         help="limit train and validation records for a smoke run",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="resume from a last.pt or compatible checkpoint",
     )
     args = parser.parse_args()
 
@@ -84,11 +107,28 @@ def main() -> None:
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
+    start_epoch = 1
     best_miou = -1.0
     history: list[dict[str, object]] = []
+    if args.resume is not None:
+        start_epoch, best_miou, history = _load_resume(
+            args.resume,
+            model,
+            optimizer,
+            device,
+        )
+        print(f"resuming from {args.resume} at epoch {start_epoch}")
+    if start_epoch > args.epochs:
+        raise SystemExit(
+            f"checkpoint is already past requested epochs: "
+            f"start={start_epoch} epochs={args.epochs}"
+        )
 
-    print(f"device={device} train={len(train_dataset)} val={len(val_dataset)}")
-    for epoch in range(1, args.epochs + 1):
+    print(
+        f"device={device} train={len(train_dataset)} "
+        f"val={len(val_dataset)} start_epoch={start_epoch}"
+    )
+    for epoch in range(start_epoch, args.epochs + 1):
         train_metrics = run_segmentation_epoch(
             model, train_loader, device, criterion, optimizer
         )
@@ -102,6 +142,23 @@ def main() -> None:
             "validation": val_metrics,
         }
         history.append(row)
+        is_best = val_metrics["miou"] > best_miou
+        if is_best:
+            best_miou = float(val_metrics["miou"])
+        checkpoint = {
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "epoch": epoch,
+            "image_size": args.image_size,
+            "class_names": ["background", "foreground"],
+            "best_miou": best_miou,
+            "seed": args.seed,
+            "history": history,
+        }
+        torch.save(checkpoint, output / "last.pt")
+        if is_best:
+            torch.save(checkpoint, output / "best.pt")
+        save_json(output / "history.json", history)
         print(
             f"epoch={epoch:03d} "
             f"train_loss={train_metrics['loss']:.4f} "
@@ -109,19 +166,6 @@ def main() -> None:
             f"val_miou={val_metrics['miou']:.4f} "
             f"val_fg_dice={val_metrics['foreground_dice']:.4f}"
         )
-        if val_metrics["miou"] > best_miou:
-            best_miou = float(val_metrics["miou"])
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "image_size": args.image_size,
-                    "class_names": ["background", "foreground"],
-                    "best_miou": best_miou,
-                    "seed": args.seed,
-                },
-                output / "best.pt",
-            )
-    save_json(output / "history.json", history)
     save_json(output / "dataset.json", index.summary())
 
 

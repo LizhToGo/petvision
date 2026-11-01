@@ -26,6 +26,23 @@ def _device(value: str) -> torch.device:
     return torch.device(value)
 
 
+def _load_resume(
+    path: Path,
+    model: SmallCNN,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> tuple[int, float, list[dict[str, object]]]:
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["model_state"])
+    if "optimizer_state" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+    else:
+        print("resume checkpoint has no optimizer state; restarting optimizer")
+    start_epoch = int(checkpoint.get("epoch", 0)) + 1
+    best_f1 = float(checkpoint.get("best_macro_f1", -1.0))
+    history = list(checkpoint.get("history", []))
+    return start_epoch, best_f1, history
+
 def _load_segmenter(path: Path, device: torch.device) -> UNet:
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     model = UNet().to(device)
@@ -60,6 +77,12 @@ def main() -> None:
         type=int,
         default=0,
         help="limit train and validation records for a smoke run",
+    )
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="resume from a last.pt or compatible checkpoint",
     )
     args = parser.parse_args()
 
@@ -104,14 +127,29 @@ def main() -> None:
     criterion = nn.CrossEntropyLoss()
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
+    start_epoch = 1
     best_f1 = -1.0
     history: list[dict[str, object]] = []
+    if args.resume is not None:
+        start_epoch, best_f1, history = _load_resume(
+            args.resume,
+            model,
+            optimizer,
+            device,
+        )
+        print(f"resuming from {args.resume} at epoch {start_epoch}")
+    if start_epoch > args.epochs:
+        raise SystemExit(
+            f"checkpoint is already past requested epochs: "
+            f"start={start_epoch} epochs={args.epochs}"
+        )
 
     print(
         f"device={device} mode={args.mode} "
-        f"train={len(train_dataset)} val={len(val_dataset)}"
+        f"train={len(train_dataset)} val={len(val_dataset)} "
+        f"start_epoch={start_epoch}"
     )
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         train_metrics = run_classification_epoch(
             model,
             train_loader,
@@ -137,6 +175,25 @@ def main() -> None:
             "validation": val_metrics,
         }
         history.append(row)
+        is_best = val_metrics["macro_f1"] > best_f1
+        if is_best:
+            best_f1 = float(val_metrics["macro_f1"])
+        checkpoint = {
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "epoch": epoch,
+            "image_size": args.image_size,
+            "class_names": list(index.class_names),
+            "mode": args.mode,
+            "alpha": args.alpha,
+            "best_macro_f1": best_f1,
+            "seed": args.seed,
+            "history": history,
+        }
+        torch.save(checkpoint, output / "last.pt")
+        if is_best:
+            torch.save(checkpoint, output / "best.pt")
+        save_json(output / "history.json", history)
         print(
             f"epoch={epoch:03d} "
             f"train_loss={train_metrics['loss']:.4f} "
@@ -144,21 +201,6 @@ def main() -> None:
             f"val_acc={val_metrics['accuracy']:.4f} "
             f"val_f1={val_metrics['macro_f1']:.4f}"
         )
-        if val_metrics["macro_f1"] > best_f1:
-            best_f1 = float(val_metrics["macro_f1"])
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "image_size": args.image_size,
-                    "class_names": list(index.class_names),
-                    "mode": args.mode,
-                    "alpha": args.alpha,
-                    "best_macro_f1": best_f1,
-                    "seed": args.seed,
-                },
-                output / "best.pt",
-            )
-    save_json(output / "history.json", history)
     save_json(output / "dataset.json", index.summary())
 
 
