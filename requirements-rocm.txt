@@ -1,0 +1,7 @@
+# Keep the preinstalled ROCm PyTorch. Do not add torch here.
+numpy>=2.0
+Pillow>=10.0
+matplotlib>=3.8
+tqdm>=4.66
+gradio>=5.0
+huggingface_hub>=0.27

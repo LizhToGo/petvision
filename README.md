@@ -52,8 +52,15 @@ appropriate only for data checks, code validation, and small smoke runs.
 ### AMD ROCm
 
 For AMD Instinct or Radeon GPUs, do not install the NVIDIA CUDA wheel above.
-Use a ModelScope or Linux image with a ROCm-compatible PyTorch build, then
-install the non-framework dependencies without replacing PyTorch. Verify with:
+Use a ModelScope or Linux image with a preinstalled ROCm-compatible PyTorch
+build. Install the remaining dependencies without replacing PyTorch:
+
+```bash
+python -m pip install -r requirements-rocm.txt
+python -m pip install -e . --no-deps
+```
+
+Verify the ROCm device:
 
 ```bash
 python -c "import torch; print(torch.__version__); print(torch.version.hip); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
