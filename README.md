@@ -13,6 +13,7 @@
 - 原图分类与分割辅助分类对照；
 - Top-5 概率、mask、叠加图和前景提取可视化；
 - Gradio 真实模型推理界面。
+- 验证集选择权重的原图/分割辅助分类晚期融合；
 
 当前实现采用二值前景 mask。Zenodo 标签包提供紫色背景和黄色前景的二值分割图；程序将其转换为 `1=foreground`、`2=background`。镜像中缺少 mask 的 4 个图像会从 trainval/test 列表中过滤，当前可用记录为 7348 条。报告中应明确这一数据处理事实，不将其描述为原始三值 trimap。
 
@@ -244,6 +245,23 @@ p_fusion = lambda * p_raw + (1 - lambda) * p_guided
 
 The test set is not used to select `lambda`.
 
+## 演示中的晚期融合
+
+当前正式实验选择 `raw=0.23`、`guided=0.77`。启动界面时会同时展示
+原图分类、分割辅助分类和晚期融合分类的 Top-5 结果：
+
+```powershell
+.venv\Scripts\python.exe scripts\app.py `
+  --segmentation-checkpoint artifacts\segmentation\best.pt `
+  --raw-checkpoint artifacts\classification\raw\best.pt `
+  --guided-checkpoint artifacts\classification\guided\best.pt `
+  --fusion-raw-weight 0.23 `
+  --device auto
+```
+
+如果重新训练了模型，应先运行 `scripts/evaluate_fusion.py`，再将验证集
+选择出的 `raw_weight` 传给 `scripts/app.py`；不要直接使用测试集调出的权重。
+
 ## 背景鲁棒性实验
 
 ```powershell
@@ -286,6 +304,7 @@ The test set is not used to select `lambda`.
   --segmentation-checkpoint artifacts\segmentation\best.pt `
   --raw-checkpoint artifacts\classification\raw\best.pt `
   --guided-checkpoint artifacts\classification\guided\best.pt `
+  --fusion-raw-weight 0.23 `
   --device auto
 ```
 

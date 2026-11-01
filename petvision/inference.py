@@ -1,4 +1,4 @@
-"""End-to-end inference for segmentation and two classifiers."""
+"""End-to-end inference for segmentation, classification, and late fusion."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ class Prediction:
     foreground_image: Image.Image
     raw_top5: list[tuple[str, float]]
     guided_top5: list[tuple[str, float]]
+    fusion_top5: list[tuple[str, float]]
 
 
 class PetVisionInference:
@@ -37,6 +38,7 @@ class PetVisionInference:
         class_names: tuple[str, ...],
         image_size: int,
         alpha: float,
+        fusion_raw_weight: float,
         device: torch.device,
     ) -> None:
         self.segmenter = segmenter.eval()
@@ -45,6 +47,9 @@ class PetVisionInference:
         self.class_names = class_names
         self.image_size = image_size
         self.alpha = alpha
+        if not 0.0 <= fusion_raw_weight <= 1.0:
+            raise ValueError("fusion_raw_weight must be between 0 and 1")
+        self.fusion_raw_weight = fusion_raw_weight
         self.device = device
 
     @classmethod
@@ -54,6 +59,7 @@ class PetVisionInference:
         raw_checkpoint: str | Path,
         guided_checkpoint: str | Path,
         device: str = "auto",
+        fusion_raw_weight: float = 0.23,
     ) -> "PetVisionInference":
         if device == "auto":
             selected_device = torch.device(
@@ -94,6 +100,7 @@ class PetVisionInference:
             class_names=class_names,
             image_size=int(raw["image_size"]),
             alpha=float(guided.get("alpha", 0.25)),
+            fusion_raw_weight=fusion_raw_weight,
             device=selected_device,
         )
 
@@ -105,10 +112,15 @@ class PetVisionInference:
         foreground_probability = segmentation_logits.softmax(dim=1)[0, 1]
         binary_mask = (foreground_probability >= 0.5).cpu().numpy().astype(np.uint8)
         guided_input = apply_soft_mask(batch, segmentation_logits, self.alpha)
-        raw_logits = self.raw_classifier(batch)
-        guided_logits = self.guided_classifier(guided_input)
-        raw_top5 = self._top_k(raw_logits, top_k)
-        guided_top5 = self._top_k(guided_logits, top_k)
+        raw_probability = self.raw_classifier(batch).softmax(dim=1)[0]
+        guided_probability = self.guided_classifier(guided_input).softmax(dim=1)[0]
+        fusion_probability = (
+            self.fusion_raw_weight * raw_probability
+            + (1.0 - self.fusion_raw_weight) * guided_probability
+        )
+        raw_top5 = self._top_k_probabilities(raw_probability, top_k)
+        guided_top5 = self._top_k_probabilities(guided_probability, top_k)
+        fusion_top5 = self._top_k_probabilities(fusion_probability, top_k)
 
         rgb = np.asarray(resized, dtype=np.uint8)
         overlay = rgb.copy()
@@ -123,14 +135,14 @@ class PetVisionInference:
             foreground_image=Image.fromarray(foreground),
             raw_top5=raw_top5,
             guided_top5=guided_top5,
+            fusion_top5=fusion_top5,
         )
 
-    def _top_k(
+    def _top_k_probabilities(
         self,
-        logits: torch.Tensor,
+        probabilities: torch.Tensor,
         top_k: int,
     ) -> list[tuple[str, float]]:
-        probabilities = logits.softmax(dim=1)[0]
         values, indices = probabilities.topk(min(top_k, len(self.class_names)))
         return [
             (self.class_names[int(index)], float(value))
