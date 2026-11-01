@@ -7,10 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 from PIL import Image
 
 from petvision.data.transforms import image_to_tensor
-from petvision.models import SmallCNN, UNet
+from petvision.models import UNet, classifier_from_checkpoint
 from petvision.training.loops import apply_soft_mask
 
 
@@ -33,8 +34,8 @@ class PetVisionInference:
     def __init__(
         self,
         segmenter: UNet,
-        raw_classifier: SmallCNN,
-        guided_classifier: SmallCNN,
+        raw_classifier: nn.Module,
+        guided_classifier: nn.Module,
         class_names: tuple[str, ...],
         image_size: int,
         alpha: float,
@@ -89,10 +90,8 @@ class PetVisionInference:
             raise ValueError("Raw and guided checkpoints use different image sizes")
         segmenter_model = UNet().to(selected_device)
         segmenter_model.load_state_dict(segmentation["model_state"])
-        raw_model = SmallCNN(num_classes=len(class_names)).to(selected_device)
-        raw_model.load_state_dict(raw["model_state"])
-        guided_model = SmallCNN(num_classes=len(class_names)).to(selected_device)
-        guided_model.load_state_dict(guided["model_state"])
+        raw_model = classifier_from_checkpoint(raw, selected_device)
+        guided_model = classifier_from_checkpoint(guided, selected_device)
         return cls(
             segmenter=segmenter_model,
             raw_classifier=raw_model,

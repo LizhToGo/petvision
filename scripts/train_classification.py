@@ -14,7 +14,7 @@ from petvision.data import OxfordIIITPetIndex
 from petvision.data.dataset import OxfordPetDataset
 from petvision.data.splits import stratified_train_val
 from petvision.data.transforms import PairedTransform
-from petvision.models.classifier import SmallCNN
+from petvision.models import build_classifier
 from petvision.models.unet import UNet
 from petvision.training.loops import run_classification_epoch
 from petvision.training.utils import save_json, set_seed
@@ -27,12 +27,10 @@ def _device(value: str) -> torch.device:
 
 
 def _load_resume(
-    path: Path,
-    model: SmallCNN,
+    checkpoint: dict,
+    model: nn.Module,
     optimizer: torch.optim.Optimizer,
-    device: torch.device,
 ) -> tuple[int, float, list[dict[str, object]]]:
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state"])
     if "optimizer_state" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state"])
@@ -56,8 +54,12 @@ def _load_segmenter(path: Path, device: torch.device) -> UNet:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path("data/oxford-iiit-pet"))
-    parser.add_argument("--output", type=Path, default=Path("artifacts/classification/raw"))
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--mode", choices=("raw", "guided"), default="raw")
+    parser.add_argument("--architecture", choices=("small_cnn", "resnet18"), default=None)
+    parser.add_argument(
+        "--pretrained", action="store_true", help="initialize ResNet-18 with ImageNet-1K V1 weights"
+    )
     parser.add_argument(
         "--segmenter-checkpoint",
         type=Path,
@@ -93,6 +95,25 @@ def main() -> None:
         )
     set_seed(args.seed)
     device = _device(args.device)
+    resume_checkpoint = (
+        torch.load(args.resume, map_location=device, weights_only=False)
+        if args.resume is not None else None
+    )
+    checkpoint_architecture = (
+        resume_checkpoint.get("architecture", "small_cnn")
+        if resume_checkpoint is not None else None
+    )
+    if args.architecture is not None and checkpoint_architecture is not None:
+        if args.architecture != checkpoint_architecture:
+            raise SystemExit("--architecture does not match the resume checkpoint")
+    architecture = args.architecture or checkpoint_architecture or "small_cnn"
+    if args.pretrained and architecture != "resnet18":
+        raise SystemExit("--pretrained is only supported for resnet18")
+    pretrained_source = (
+        resume_checkpoint.get("pretrained_source")
+        if resume_checkpoint is not None
+        else "torchvision:ResNet18_Weights.IMAGENET1K_V1" if args.pretrained else None
+    )
     index = OxfordIIITPetIndex(args.root)
     train_records, val_records = stratified_train_val(
         index.records("trainval"), args.val_fraction, args.seed
@@ -122,20 +143,27 @@ def main() -> None:
     segmenter = None
     if args.mode == "guided":
         segmenter = _load_segmenter(args.segmenter_checkpoint, device)
-    model = SmallCNN(num_classes=index.num_classes).to(device)
+    if architecture == "resnet18":
+        # Segmenter construction must not change the classifier's initialization.
+        set_seed(args.seed)
+    model = build_classifier(
+        num_classes=index.num_classes,
+        architecture=architecture,
+        pretrained=args.pretrained and resume_checkpoint is None,
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     criterion = nn.CrossEntropyLoss()
-    output = args.output
+    output = args.output or (
+        Path("artifacts/classification/raw") if architecture == "small_cnn"
+        else Path("artifacts/classification") / architecture / args.mode
+    )
     output.mkdir(parents=True, exist_ok=True)
     start_epoch = 1
     best_f1 = -1.0
     history: list[dict[str, object]] = []
-    if args.resume is not None:
+    if resume_checkpoint is not None:
         start_epoch, best_f1, history = _load_resume(
-            args.resume,
-            model,
-            optimizer,
-            device,
+            resume_checkpoint, model, optimizer
         )
         print(f"resuming from {args.resume} at epoch {start_epoch}")
     if start_epoch > args.epochs:
@@ -145,7 +173,7 @@ def main() -> None:
         )
 
     print(
-        f"device={device} mode={args.mode} "
+        f"device={device} mode={args.mode} architecture={architecture} "
         f"train={len(train_dataset)} val={len(val_dataset)} "
         f"start_epoch={start_epoch}"
     )
@@ -185,7 +213,13 @@ def main() -> None:
             "image_size": args.image_size,
             "class_names": list(index.class_names),
             "mode": args.mode,
+            "architecture": architecture,
+            "pretrained_source": pretrained_source,
             "alpha": args.alpha,
+            "learning_rate": optimizer.param_groups[0]["lr"],
+            "val_fraction": args.val_fraction,
+            "batch_size": args.batch_size,
+            "segmenter_checkpoint": str(args.segmenter_checkpoint) if args.mode == "guided" else None,
             "best_macro_f1": best_f1,
             "seed": args.seed,
             "history": history,

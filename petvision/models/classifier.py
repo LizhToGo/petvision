@@ -46,3 +46,42 @@ class SmallCNN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.classifier(self.pool(self.features(x)))
+
+
+class ResNet18Classifier(nn.Module):
+    """ResNet-18 backbone with a task-specific classification head."""
+
+    def __init__(self, num_classes: int, pretrained: bool = False) -> None:
+        super().__init__()
+        from torchvision.models import ResNet18_Weights, resnet18
+
+        weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        self.backbone = resnet18(weights=weights)
+        in_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity()
+        self.classifier = nn.Sequential(nn.Linear(in_features, num_classes))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.classifier(self.backbone(x))
+
+
+def build_classifier(
+    num_classes: int, architecture: str = "small_cnn", pretrained: bool = False
+) -> nn.Module:
+    if architecture == "small_cnn":
+        if pretrained:
+            raise ValueError("Pretrained weights are only available for resnet18")
+        return SmallCNN(num_classes=num_classes)
+    if architecture == "resnet18":
+        return ResNet18Classifier(num_classes=num_classes, pretrained=pretrained)
+    raise ValueError(f"Unknown classifier architecture: {architecture}")
+
+
+def classifier_from_checkpoint(checkpoint: dict, device: torch.device) -> nn.Module:
+    model = build_classifier(
+        num_classes=len(checkpoint["class_names"]),
+        architecture=checkpoint.get("architecture", "small_cnn"),
+        pretrained=False,
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state"])
+    return model

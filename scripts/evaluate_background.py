@@ -6,13 +6,14 @@ import argparse
 from pathlib import Path
 
 import torch
+from torch import nn
 from PIL import Image, ImageFilter
 from torch.utils.data import DataLoader, Dataset
 
 from petvision.data import OxfordIIITPetIndex, trimap_to_binary, trimap_to_target
 from petvision.data.oxford_pet import PetRecord
 from petvision.data.transforms import image_to_tensor
-from petvision.models import SmallCNN, UNet
+from petvision.models import UNet, classifier_from_checkpoint
 from petvision.training import run_classification_epoch
 from petvision.training.utils import save_json, set_seed
 
@@ -76,7 +77,7 @@ def _load(
     raw_path: Path,
     guided_path: Path,
     device: torch.device,
-) -> tuple[UNet, SmallCNN, SmallCNN, int, float]:
+) -> tuple[UNet, nn.Module, nn.Module, int, float]:
     segmentation_state = torch.load(
         segmentation_path,
         map_location=device,
@@ -84,13 +85,10 @@ def _load(
     )
     raw_state = torch.load(raw_path, map_location=device, weights_only=False)
     guided_state = torch.load(guided_path, map_location=device, weights_only=False)
-    class_count = len(raw_state["class_names"])
     segmenter = UNet().to(device)
     segmenter.load_state_dict(segmentation_state["model_state"])
-    raw_model = SmallCNN(num_classes=class_count).to(device)
-    raw_model.load_state_dict(raw_state["model_state"])
-    guided_model = SmallCNN(num_classes=class_count).to(device)
-    guided_model.load_state_dict(guided_state["model_state"])
+    raw_model = classifier_from_checkpoint(raw_state, device)
+    guided_model = classifier_from_checkpoint(guided_state, device)
     return (
         segmenter,
         raw_model,

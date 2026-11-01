@@ -150,6 +150,57 @@ x_guided = x * (alpha + (1 - alpha) * foreground_probability)
 
 默认 `alpha=0.25`，可通过 `--alpha` 调整。
 
+### 4. ResNet-18 迁移学习对照
+
+以下实验在现有划分和数据预处理上，分别训练原图与分割辅助分类器。
+两者均从 torchvision 的 ImageNet-1K V1 预训练权重初始化，并微调整个
+ResNet-18；分类头针对 37 类重新初始化。首次运行需要下载预训练权重，
+之后加载本实验的 checkpoint 不需要再次下载。ROCm 用户需要同时安装与
+已安装 PyTorch 匹配的 torchvision 版本。
+
+```powershell
+.venv\Scripts\python.exe scripts\train_classification.py `
+  --architecture resnet18 --pretrained --mode raw `
+  --epochs 20 --batch-size 4 --image-size 256 --learning-rate 0.0001 `
+  --seed 42 --device auto --output artifacts\experiments\resnet18_imagenet\raw
+
+.venv\Scripts\python.exe scripts\train_classification.py `
+  --architecture resnet18 --pretrained --mode guided `
+  --segmenter-checkpoint artifacts\segmentation\best.pt `
+  --epochs 20 --batch-size 4 --image-size 256 --learning-rate 0.0001 `
+  --seed 42 --device auto --output artifacts\experiments\resnet18_imagenet\guided
+
+.venv\Scripts\python.exe scripts\evaluate_fusion.py `
+  --segmentation-checkpoint artifacts\segmentation\best.pt `
+  --raw-checkpoint artifacts\experiments\resnet18_imagenet\raw\best.pt `
+  --guided-checkpoint artifacts\experiments\resnet18_imagenet\guided\best.pt `
+  --output artifacts\experiments\resnet18_imagenet\fusion `
+  --batch-size 4 --lambda-step 0.05 --seed 42 --device auto
+```
+
+两条新分支采用相同的设置与分割引导系数，仅比较原图和预测 mask 辅助输入。
+每个分支按验证集 Macro-F1 保存最佳模型，融合权重也只在验证集选择。
+评估输出在 `fusion/metrics.json`；新的模型应使用其中验证集选出的
+`metadata.raw_weight` 启动演示，不能沿用旧实验的 0.23。
+相较于从零训练的 SmallCNN，ResNet-18 同时改变了架构与预训练，不能将性能
+差异单独归因于网络结构；单个随机种子的结果也不能说明统计显著性。
+
+云端 Linux 可使用同样的固定配置顺序运行两组训练及融合评价，例如：
+
+```bash
+export DATA_ROOT="$PWD/data/oxford-iiit-pet"
+export SEGMENTATION_CHECKPOINT="$PWD/artifacts/segmentation/best.pt"
+export RUN_DIR="$PWD/artifacts/experiments/resnet18_cloud_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$PWD/artifacts/experiments"
+mkdir "$RUN_DIR"
+nohup bash scripts/run_resnet18_cloud.sh >"$RUN_DIR/train.log" 2>&1 &
+echo "PID=$!  RUN_DIR=$RUN_DIR"
+tail -f "$RUN_DIR/train.log"
+```
+
+根据实际环境修改数据和分割权重路径。脚本要求 GPU 可用，并拒绝覆盖已有
+实验输出；中断后如需续训，使用对应 `last.pt` 调用下文的 `--resume`。
+
 ### Training loop meaning
 
 For each batch, the program loads and preprocesses images, runs a forward

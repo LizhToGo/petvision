@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 
 from petvision.data import OxfordIIITPetIndex
@@ -14,7 +15,7 @@ from petvision.data.dataset import OxfordPetDataset
 from petvision.data.splits import stratified_train_val
 from petvision.data.transforms import PairedTransform
 from petvision.evaluation import ClassificationMeter
-from petvision.models import SmallCNN, UNet
+from petvision.models import UNet, classifier_from_checkpoint
 from petvision.training import apply_soft_mask
 from petvision.training.utils import save_json, set_seed
 
@@ -30,7 +31,7 @@ def _load_models(
     raw_path: Path,
     guided_path: Path,
     device: torch.device,
-) -> tuple[UNet, SmallCNN, SmallCNN, int, float, tuple[str, ...]]:
+) -> tuple[UNet, nn.Module, nn.Module, int, float, tuple[str, ...]]:
     segmentation_state = torch.load(
         segmentation_path,
         map_location=device,
@@ -47,10 +48,8 @@ def _load_models(
         raise ValueError("Raw and guided checkpoints use different classes")
     segmenter = UNet().to(device)
     segmenter.load_state_dict(segmentation_state["model_state"])
-    raw_model = SmallCNN(num_classes=len(class_names)).to(device)
-    raw_model.load_state_dict(raw_state["model_state"])
-    guided_model = SmallCNN(num_classes=len(class_names)).to(device)
-    guided_model.load_state_dict(guided_state["model_state"])
+    raw_model = classifier_from_checkpoint(raw_state, device)
+    guided_model = classifier_from_checkpoint(guided_state, device)
     return (
         segmenter.eval(),
         raw_model.eval(),
@@ -64,8 +63,8 @@ def _load_models(
 def _collect_probabilities(
     loader: DataLoader,
     segmenter: UNet,
-    raw_model: SmallCNN,
-    guided_model: SmallCNN,
+    raw_model: nn.Module,
+    guided_model: nn.Module,
     device: torch.device,
     alpha: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

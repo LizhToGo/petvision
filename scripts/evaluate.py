@@ -13,7 +13,7 @@ from petvision.config import IGNORE_INDEX, RANDOM_SEED
 from petvision.data import OxfordIIITPetIndex
 from petvision.data.dataset import OxfordPetDataset
 from petvision.data.transforms import PairedTransform
-from petvision.models import SmallCNN, UNet
+from petvision.models import UNet, classifier_from_checkpoint
 from petvision.training import run_classification_epoch, run_segmentation_epoch
 from petvision.training.utils import save_json, set_seed
 
@@ -29,7 +29,7 @@ def _load_models(
     raw_checkpoint: Path,
     guided_checkpoint: Path,
     device: torch.device,
-) -> tuple[UNet, SmallCNN, SmallCNN, dict[str, object]]:
+) -> tuple[UNet, nn.Module, nn.Module, dict[str, object]]:
     segmentation_state = torch.load(
         segmentation_checkpoint,
         map_location=device,
@@ -44,10 +44,8 @@ def _load_models(
     class_names = tuple(raw_state["class_names"])
     segmenter = UNet().to(device)
     segmenter.load_state_dict(segmentation_state["model_state"])
-    raw_model = SmallCNN(num_classes=len(class_names)).to(device)
-    raw_model.load_state_dict(raw_state["model_state"])
-    guided_model = SmallCNN(num_classes=len(class_names)).to(device)
-    guided_model.load_state_dict(guided_state["model_state"])
+    raw_model = classifier_from_checkpoint(raw_state, device)
+    guided_model = classifier_from_checkpoint(guided_state, device)
     metadata = {
         "class_names": list(class_names),
         "image_size": raw_state["image_size"],
