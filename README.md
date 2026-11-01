@@ -221,6 +221,29 @@ but it is not an exact optimizer-level resume.
 
 `true_mask_oracle` 只用于估计理想上限，不能作为实际部署流程。
 
+## Raw/guided late fusion
+
+This experiment does not retrain either classifier. It searches the raw
+classifier probability weight on the validation split, then evaluates the
+selected weight once on the test split:
+
+```powershell
+.venv\Scripts\python.exe scripts\evaluate_fusion.py `
+  --segmentation-checkpoint artifacts\segmentation\best.pt `
+  --raw-checkpoint artifacts\classification\raw\best.pt `
+  --guided-checkpoint artifacts\classification\guided\best.pt `
+  --output artifacts\fusion `
+  --device auto
+```
+
+The fusion probability is:
+
+```text
+p_fusion = lambda * p_raw + (1 - lambda) * p_guided
+```
+
+The test set is not used to select `lambda`.
+
 ## 背景鲁棒性实验
 
 ```powershell
