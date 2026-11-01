@@ -49,6 +49,21 @@ Verify the device before training:
 If the first output is `False`, do not start a formal GPU experiment. CPU is
 appropriate only for data checks, code validation, and small smoke runs.
 
+### AMD ROCm
+
+For AMD Instinct or Radeon GPUs, do not install the NVIDIA CUDA wheel above.
+Use a ModelScope or Linux image with a ROCm-compatible PyTorch build, then
+install the non-framework dependencies without replacing PyTorch. Verify with:
+
+```bash
+python -c "import torch; print(torch.__version__); print(torch.version.hip); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+The training code uses standard PyTorch operators and the `torch.cuda` device
+API, which is also the compatibility API exposed by ROCm builds. The exact
+ROCm wheel must match the cloud image, Python version, and driver; do not
+reuse `requirements-cuda-cu128.txt` on an AMD instance.
+
 ## 数据准备
 
 ```powershell
@@ -126,6 +141,16 @@ x_guided = x * (alpha + (1 - alpha) * foreground_probability)
 ```
 
 默认 `alpha=0.25`，可通过 `--alpha` 调整。
+
+### Training loop meaning
+
+For each batch, the program loads and preprocesses images, runs a forward
+pass, computes the loss, calls `loss.backward()`, and updates parameters with
+AdamW. After each epoch it evaluates the validation split without gradients
+and saves the checkpoint with the best validation metric. The segmentation
+loss combines cross-entropy and Dice loss; classification uses cross-entropy.
+The raw classifier is the baseline, while guided classification first uses a
+frozen U-Net to produce a soft foreground mask.
 
 ### 小规模 smoke run
 
