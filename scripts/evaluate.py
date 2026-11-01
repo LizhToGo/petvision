@@ -152,8 +152,14 @@ def main() -> None:
         "metadata": metadata,
     }
     save_json(args.output / "metrics.json", result)
+    print(
+        "segmentation",
+        "loss=%.4f" % segmentation["loss"],
+        "miou=%.4f" % segmentation["miou"],
+        "foreground_iou=%.4f" % segmentation["foreground_iou"],
+        "foreground_dice=%.4f" % segmentation["foreground_dice"],
+    )
     for name, metrics in (
-        ("segmentation", segmentation),
         ("raw", raw),
         ("predicted_mask", guided),
         ("true_mask_oracle", oracle),
@@ -161,8 +167,9 @@ def main() -> None:
         print(
             name,
             "loss=%.4f" % metrics["loss"],
-            "accuracy=%.4f" % metrics.get("accuracy", 0.0),
-            "foreground_iou=%.4f" % metrics.get("foreground_iou", 0.0),
+            "accuracy=%.4f" % metrics["accuracy"],
+            "macro_f1=%.4f" % metrics["macro_f1"],
+            "top5=%.4f" % metrics["top5_accuracy"],
         )
 
 
