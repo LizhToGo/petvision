@@ -5,7 +5,8 @@ set -euo pipefail
 : "${DATA_ROOT:?Set DATA_ROOT to the Oxford-IIIT Pet dataset directory}"
 : "${SEGMENTATION_CHECKPOINT:?Set SEGMENTATION_CHECKPOINT to the trained U-Net checkpoint}"
 : "${RUN_DIR:?Set RUN_DIR to an existing, empty experiment directory}"
-BATCH_SIZE="${BATCH_SIZE:-64}"
+EPOCHS="${EPOCHS:-30}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 
 if [[ ! -d "$DATA_ROOT/images" || ! -d "$DATA_ROOT/annotations" ]]; then
@@ -33,7 +34,7 @@ echo "Training raw ResNet-18; results: $RUN_DIR"
 python -u scripts/train_classification.py \
     --root "$DATA_ROOT" --output "$RUN_DIR/raw" \
     --architecture resnet18 --pretrained --mode raw \
-    --epochs 20 --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
+    --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
     --image-size 256 --learning-rate 0.0001 \
     --seed 42 --device cuda --fast
 
@@ -42,7 +43,7 @@ python -u scripts/train_classification.py \
     --root "$DATA_ROOT" --output "$RUN_DIR/guided" \
     --architecture resnet18 --pretrained --mode guided \
     --segmenter-checkpoint "$SEGMENTATION_CHECKPOINT" \
-    --epochs 20 --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
+    --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
     --image-size 256 --learning-rate 0.0001 \
     --seed 42 --device cuda --fast
 

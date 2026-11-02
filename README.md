@@ -222,9 +222,9 @@ guided 分支使用相同参数并增加 `--mode guided` 和
 目的不是增加训练轮数，而是检验分阶段优化能否减轻迁移学习过拟合。
 
 云端大显存实例可以在固定 `256×256` 输入下提高 batch 和数据加载并行度：
-`scripts/run_resnet18_staged_cloud.sh` 默认使用 `BATCH_SIZE=64`、
-`NUM_WORKERS=8` 和 `--fast`。显存或 CPU 不足时可在启动前设置
-`BATCH_SIZE=32`、`NUM_WORKERS=4`；`--fast` 允许固定输入尺寸的非确定性
+`scripts/run_resnet18_staged_cloud.sh` 默认使用 `BATCH_SIZE=32`、
+`NUM_WORKERS=8`、30 个 epoch 上限和 `--fast`。显存或 CPU 不足时可在
+启动前设置 `BATCH_SIZE=16`、`NUM_WORKERS=4`；`--fast` 允许固定输入尺寸的
 GPU 算子和 benchmark，正式报告应记录该设置。
 
 ### Training loop meaning

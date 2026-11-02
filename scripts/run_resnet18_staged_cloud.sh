@@ -6,12 +6,12 @@ set -euo pipefail
 : "${SEGMENTATION_CHECKPOINT:?Set SEGMENTATION_CHECKPOINT to the trained U-Net checkpoint}"
 : "${RUN_DIR:?Set RUN_DIR to an existing, empty experiment directory}"
 
-EPOCHS="${EPOCHS:-15}"
-HEAD_EPOCHS="${HEAD_EPOCHS:-2}"
+EPOCHS="${EPOCHS:-30}"
+HEAD_EPOCHS="${HEAD_EPOCHS:-4}"
 BACKBONE_LR="${BACKBONE_LR:-0.00001}"
 HEAD_LR="${HEAD_LR:-0.0001}"
-PATIENCE="${PATIENCE:-4}"
-BATCH_SIZE="${BATCH_SIZE:-64}"
+PATIENCE="${PATIENCE:-6}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 
 if [[ ! -d "$DATA_ROOT/images" || ! -d "$DATA_ROOT/annotations" ]]; then
