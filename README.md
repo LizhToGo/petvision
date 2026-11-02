@@ -358,6 +358,9 @@ The test set is not used to select `lambda`.
 ```
 
 不要直接使用测试集调出的权重。
+320×320 高分辨率对照可设置 `IMAGE_SIZE=320`，同时建议将
+`BATCH_SIZE` 调整为 16；该实验应使用新的结果目录，不覆盖 256×256
+ColorJitter 基线。
 
 ## 背景鲁棒性实验
 

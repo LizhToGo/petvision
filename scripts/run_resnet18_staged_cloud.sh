@@ -14,6 +14,7 @@ PATIENCE="${PATIENCE:-6}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 AUGMENTATION="${AUGMENTATION:-color}"
+IMAGE_SIZE="${IMAGE_SIZE:-256}"
 
 if [[ ! -d "$DATA_ROOT/images" || ! -d "$DATA_ROOT/annotations" ]]; then
     echo "Dataset not found under DATA_ROOT=$DATA_ROOT" >&2
@@ -44,7 +45,7 @@ COMMON_ARGS=(
     --early-stopping-patience "$PATIENCE"
     --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS"
     --augmentation "$AUGMENTATION"
-    --image-size 256 --seed 42 --device cuda --fast
+    --image-size "$IMAGE_SIZE" --seed 42 --device cuda --fast
 )
 
 echo "Training staged raw ResNet-18; results: $RUN_DIR"
