@@ -325,22 +325,39 @@ p_fusion = lambda * p_raw + (1 - lambda) * p_guided
 
 The test set is not used to select `lambda`.
 
+## 水平翻转 TTA
+
+不重新训练模型时，可以使用原图和水平翻转图的概率平均：
+
+```powershell
+.venv\Scripts\python.exe scripts\evaluate_fusion.py `
+  --segmentation-checkpoint artifacts\segmentation\best.pt `
+  --raw-checkpoint artifacts\classification\raw\best.pt `
+  --guided-checkpoint artifacts\classification\guided\best.pt `
+  --output artifacts\fusion_tta `
+  --batch-size 16 --num-workers 2 --lambda-step 0.05 `
+  --seed 42 --tta-flip --device auto
+```
+
+`--tta-flip` 同时作用于 raw、guided 和 fusion；融合权重仍只在验证集
+选择，结果中的 `metadata.tta_flip` 应为 `true`。
+
 ## 演示中的晚期融合
 
-当前正式实验选择 `raw=0.23`、`guided=0.77`。启动界面时会同时展示
-原图分类、分割辅助分类和晚期融合分类的 Top-5 结果：
+当前 ColorJitter 正式候选模型的验证集选择权重为
+`raw=0.65`、`guided=0.35`。如果重新评价或更换模型，必须使用对应
+`fusion/metrics.json` 中的 `metadata.raw_weight`：
 
 ```powershell
 .venv\Scripts\python.exe scripts\app.py `
   --segmentation-checkpoint artifacts\segmentation\best.pt `
   --raw-checkpoint artifacts\classification\raw\best.pt `
   --guided-checkpoint artifacts\classification\guided\best.pt `
-  --fusion-raw-weight 0.23 `
+  --fusion-raw-weight 0.65 `
   --device auto
 ```
 
-如果重新训练了模型，应先运行 `scripts/evaluate_fusion.py`，再将验证集
-选择出的 `raw_weight` 传给 `scripts/app.py`；不要直接使用测试集调出的权重。
+不要直接使用测试集调出的权重。
 
 ## 背景鲁棒性实验
 

@@ -67,21 +67,39 @@ def _collect_probabilities(
     guided_model: nn.Module,
     device: torch.device,
     alpha: float,
+    tta_flip: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     raw_batches: list[np.ndarray] = []
     guided_batches: list[np.ndarray] = []
     labels: list[np.ndarray] = []
     with torch.inference_mode():
         for batch in loader:
-            images = batch["image"].to(device)
-            raw_probability = raw_model(images).softmax(dim=1)
-            segmentation_logits = segmenter(images)
-            guided_images = apply_soft_mask(
-                images,
-                segmentation_logits,
-                alpha,
+            images = batch["image"].to(
+                device,
+                non_blocking=device.type == "cuda",
             )
-            guided_probability = guided_model(guided_images).softmax(dim=1)
+
+            def predict(
+                inputs: torch.Tensor,
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                raw_probability = raw_model(inputs).softmax(dim=1)
+                segmentation_logits = segmenter(inputs)
+                guided_images = apply_soft_mask(
+                    inputs,
+                    segmentation_logits,
+                    alpha,
+                )
+                guided_probability = guided_model(guided_images).softmax(dim=1)
+                return raw_probability, guided_probability
+
+            raw_probability, guided_probability = predict(images)
+            if tta_flip:
+                flipped = torch.flip(images, dims=(-1,))
+                flipped_raw, flipped_guided = predict(flipped)
+                raw_probability = 0.5 * (raw_probability + flipped_raw)
+                guided_probability = 0.5 * (
+                    guided_probability + flipped_guided
+                )
             raw_batches.append(raw_probability.cpu().numpy())
             guided_batches.append(guided_probability.cpu().numpy())
             labels.append(batch["label"].numpy())
@@ -125,6 +143,11 @@ def main() -> None:
     parser.add_argument("--lambda-step", type=float, default=0.05)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--tta-flip",
+        action="store_true",
+        help="average predictions from the original and horizontally flipped image",
+    )
     args = parser.parse_args()
 
     if not 0.0 < args.lambda_step <= 1.0:
@@ -168,6 +191,7 @@ def main() -> None:
         guided_model,
         device,
         alpha,
+        args.tta_flip,
     )
     test_raw, test_guided, test_labels = _collect_probabilities(
         test_loader,
@@ -176,6 +200,7 @@ def main() -> None:
         guided_model,
         device,
         alpha,
+        args.tta_flip,
     )
 
     lambdas = np.arange(
@@ -226,10 +251,8 @@ def main() -> None:
         "dataset": index.summary(),
         "class_names": list(class_names),
         "metadata": {
-            "image_size": image_size,
-            "alpha": alpha,
-            "lambda_step": args.lambda_step,
             "selection_metric": "validation_macro_f1",
+            "tta_flip": args.tta_flip,
             "raw_weight": best_lambda,
             "guided_weight": 1.0 - best_lambda,
         },
