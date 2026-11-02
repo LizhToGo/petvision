@@ -60,6 +60,20 @@ class ResNet18Classifier(nn.Module):
         in_features = self.backbone.fc.in_features
         self.backbone.fc = nn.Identity()
         self.classifier = nn.Sequential(nn.Linear(in_features, num_classes))
+        self.backbone_frozen = False
+
+    def set_backbone_trainable(self, trainable: bool) -> None:
+        self.backbone_frozen = not trainable
+        for parameter in self.backbone.parameters():
+            parameter.requires_grad_(trainable)
+        for parameter in self.classifier.parameters():
+            parameter.requires_grad_(True)
+
+    def train(self, mode: bool = True) -> "ResNet18Classifier":
+        super().train(mode)
+        if mode and self.backbone_frozen:
+            self.backbone.eval()
+        return self
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.classifier(self.backbone(x))

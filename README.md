@@ -201,6 +201,26 @@ tail -f "$RUN_DIR/train.log"
 根据实际环境修改数据和分割权重路径。脚本要求 GPU 可用，并拒绝覆盖已有
 实验输出；中断后如需续训，使用对应 `last.pt` 调用下文的 `--resume`。
 
+### 5. 两阶段微调与 early stopping
+
+上一轮结果显示 ResNet-18 的训练损失继续下降，但验证集 Macro-F1 在第
+4～5 轮后回落。因此可以冻结 backbone 训练分类头，再用更小的 backbone
+学习率解冻微调：
+
+```powershell
+.venv\Scripts\python.exe scripts\train_classification.py `
+  --architecture resnet18 --pretrained --schedule staged --mode raw `
+  --head-epochs 2 --epochs 15 `
+  --backbone-learning-rate 0.00001 --head-learning-rate 0.0001 `
+  --early-stopping-patience 4 --batch-size 4 --image-size 256 `
+  --seed 42 --device auto `
+  --output artifacts\experiments\resnet18_staged\raw
+```
+
+guided 分支使用相同参数并增加 `--mode guided` 和
+`--segmenter-checkpoint`。`best.pt` 按验证集 Macro-F1 保存；该实验的
+目的不是增加训练轮数，而是检验分阶段优化能否减轻迁移学习过拟合。
+
 ### Training loop meaning
 
 For each batch, the program loads and preprocesses images, runs a forward
