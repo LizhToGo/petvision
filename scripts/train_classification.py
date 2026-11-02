@@ -109,6 +109,12 @@ def main() -> None:
         help="initialize ResNet-18 with ImageNet-1K V1 weights",
     )
     parser.add_argument(
+        "--augmentation",
+        choices=("none", "color"),
+        default=None,
+        help="training image augmentation; color applies mild brightness/contrast/saturation jitter",
+    )
+    parser.add_argument(
         "--segmenter-checkpoint",
         type=Path,
         default=Path("artifacts/segmentation/best.pt"),
@@ -207,6 +213,15 @@ def main() -> None:
         if args.schedule != checkpoint_schedule:
             raise SystemExit("--schedule does not match the resume checkpoint")
     schedule = args.schedule or checkpoint_schedule or "flat"
+    checkpoint_augmentation = (
+        resume_checkpoint.get("augmentation", "none")
+        if resume_checkpoint is not None
+        else None
+    )
+    if args.augmentation is not None and checkpoint_augmentation is not None:
+        if args.augmentation != checkpoint_augmentation:
+            raise SystemExit("--augmentation does not match the resume checkpoint")
+    augmentation = args.augmentation or checkpoint_augmentation or "none"
     if schedule == "staged" and architecture != "resnet18":
         raise SystemExit("--schedule staged is only supported for resnet18")
     pretrained_source = (
@@ -257,7 +272,11 @@ def main() -> None:
     if args.limit > 0:
         train_records = train_records[: args.limit]
         val_records = val_records[: max(1, args.limit // 4)]
-    transform_train = PairedTransform(args.image_size, train=True)
+    transform_train = PairedTransform(
+        args.image_size,
+        train=True,
+        color_jitter=augmentation == "color",
+    )
     transform_val = PairedTransform(args.image_size, train=False)
     train_dataset = OxfordPetDataset(index, train_records, transform_train)
     val_dataset = OxfordPetDataset(index, val_records, transform_val)
@@ -326,7 +345,7 @@ def main() -> None:
 
     print(
         f"device={device} mode={args.mode} architecture={architecture} "
-        f"schedule={schedule} fast={args.fast} train={len(train_dataset)} "
+        f"schedule={schedule} augmentation={augmentation} fast={args.fast} "
         f"val={len(val_dataset)} start_epoch={start_epoch}"
     )
     for epoch in range(start_epoch, args.epochs + 1):
@@ -383,7 +402,7 @@ def main() -> None:
             "class_names": list(index.class_names),
             "mode": args.mode,
             "architecture": architecture,
-            "pretrained_source": pretrained_source,
+            "augmentation": augmentation,
             "alpha": args.alpha,
             "learning_rate": learning_rate,
             "backbone_learning_rate": backbone_learning_rate,

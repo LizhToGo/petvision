@@ -226,6 +226,9 @@ guided 分支使用相同参数并增加 `--mode guided` 和
 `NUM_WORKERS=8`、30 个 epoch 上限和 `--fast`。显存或 CPU 不足时可在
 启动前设置 `BATCH_SIZE=16`、`NUM_WORKERS=4`；`--fast` 允许固定输入尺寸的
 GPU 算子和 benchmark，正式报告应记录该设置。
+默认 `AUGMENTATION=color`，对训练图像施加轻微亮度、对比度和饱和度
+扰动；复现当前无增强基线时设置 `AUGMENTATION=none`。验证集与测试集
+不使用增强。
 
 ### Training loop meaning
 

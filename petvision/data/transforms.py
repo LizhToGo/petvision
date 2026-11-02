@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-from PIL import Image, ImageOps
+from PIL import Image, ImageEnhance, ImageOps
 
 from petvision.config import IMAGE_SIZE
 from petvision.data.oxford_pet import trimap_to_target
@@ -34,10 +34,11 @@ def image_to_tensor(
 
 @dataclass(frozen=True)
 class PairedTransform:
-    """Resize, optionally flip, and convert an image/trimap pair to tensors."""
+    """Resize, optionally augment, and convert an image/trimap pair."""
 
     image_size: int = IMAGE_SIZE
     train: bool = False
+    color_jitter: bool = False
     mean: tuple[float, float, float] = (0.485, 0.456, 0.406)
     std: tuple[float, float, float] = (0.229, 0.224, 0.225)
 
@@ -49,10 +50,19 @@ class PairedTransform:
         size = (self.image_size, self.image_size)
         image = image.resize(size, Image.Resampling.BILINEAR)
         trimap = trimap.resize(size, Image.Resampling.NEAREST)
+        if self.train and self.color_jitter:
+            image = ImageEnhance.Brightness(image).enhance(
+                random.uniform(0.8, 1.2)
+            )
+            image = ImageEnhance.Contrast(image).enhance(
+                random.uniform(0.8, 1.2)
+            )
+            image = ImageEnhance.Color(image).enhance(
+                random.uniform(0.8, 1.2)
+            )
         if self.train and random.random() < 0.5:
             image = ImageOps.mirror(image)
             trimap = ImageOps.mirror(trimap)
-
         image_tensor, _ = image_to_tensor(
             image,
             image_size=self.image_size,

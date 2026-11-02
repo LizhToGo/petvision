@@ -13,6 +13,7 @@ HEAD_LR="${HEAD_LR:-0.0001}"
 PATIENCE="${PATIENCE:-6}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
+AUGMENTATION="${AUGMENTATION:-color}"
 
 if [[ ! -d "$DATA_ROOT/images" || ! -d "$DATA_ROOT/annotations" ]]; then
     echo "Dataset not found under DATA_ROOT=$DATA_ROOT" >&2
@@ -42,6 +43,7 @@ COMMON_ARGS=(
     --head-learning-rate "$HEAD_LR"
     --early-stopping-patience "$PATIENCE"
     --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS"
+    --augmentation "$AUGMENTATION"
     --image-size 256 --seed 42 --device cuda --fast
 )
 
