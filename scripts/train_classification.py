@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 import torch
@@ -332,6 +333,7 @@ def main() -> None:
         backbone_trainable = schedule != "staged" or epoch > head_epochs
         _set_backbone_trainable(model, architecture, backbone_trainable)
         stage = "full" if backbone_trainable else "head"
+        train_started = time.perf_counter()
         train_metrics = run_classification_epoch(
             model,
             train_loader,
@@ -341,6 +343,8 @@ def main() -> None:
             segmenter,
             args.alpha,
         )
+        train_seconds = time.perf_counter() - train_started
+        validation_started = time.perf_counter()
         with torch.no_grad():
             val_metrics = run_classification_epoch(
                 model,
@@ -351,9 +355,16 @@ def main() -> None:
                 segmenter,
                 args.alpha,
             )
+        validation_seconds = time.perf_counter() - validation_started
         row = {
             "epoch": epoch,
             "stage": stage,
+            "timing": {
+                "train_seconds": train_seconds,
+                "validation_seconds": validation_seconds,
+                "train_samples_per_second": len(train_dataset)
+                / max(train_seconds, 1e-9),
+            },
             "train": train_metrics,
             "validation": val_metrics,
         }
@@ -399,7 +410,10 @@ def main() -> None:
             f"train_loss={train_metrics['loss']:.4f} "
             f"val_loss={val_metrics['loss']:.4f} "
             f"val_acc={val_metrics['accuracy']:.4f} "
-            f"val_f1={val_metrics['macro_f1']:.4f}"
+            f"val_f1={val_metrics['macro_f1']:.4f} "
+            f"train_s={train_seconds:.1f} "
+            f"val_s={validation_seconds:.1f} "
+            f"samples_s={len(train_dataset) / max(train_seconds, 1e-9):.1f}"
         )
         if (
             early_stopping_patience > 0
