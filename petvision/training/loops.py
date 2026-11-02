@@ -85,12 +85,13 @@ def run_classification_epoch(
     meter = ClassificationMeter(model.classifier[-1].out_features)
 
     for batch in loader:
-        images = batch["image"].to(device)
-        labels = batch["label"].to(device)
+        non_blocking = device.type == "cuda"
+        images = batch["image"].to(device, non_blocking=non_blocking)
+        labels = batch["label"].to(device, non_blocking=non_blocking)
         if oracle_mask:
             images = apply_true_mask(
                 images,
-                batch["mask"].to(device),
+                batch["mask"].to(device, non_blocking=non_blocking),
                 alpha,
             )
         else:

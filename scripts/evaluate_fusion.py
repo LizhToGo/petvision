@@ -17,7 +17,7 @@ from petvision.data.transforms import PairedTransform
 from petvision.evaluation import ClassificationMeter
 from petvision.models import UNet, classifier_from_checkpoint
 from petvision.training import apply_soft_mask
-from petvision.training.utils import save_json, set_seed
+from petvision.training.utils import dataloader_options, save_json, set_seed
 
 
 def _device(value: str) -> torch.device:
@@ -152,15 +152,13 @@ def main() -> None:
         OxfordPetDataset(index, val_records, transform),
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
+        **dataloader_options(device, args.num_workers),
     )
     test_loader = DataLoader(
         OxfordPetDataset(index, test_records, transform),
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
+        **dataloader_options(device, args.num_workers),
     )
 
     val_raw, val_guided, val_labels = _collect_probabilities(

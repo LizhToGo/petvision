@@ -11,14 +11,28 @@ import numpy as np
 import torch
 
 
-def set_seed(seed: int) -> None:
+def set_seed(seed: int, deterministic: bool = True) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = not deterministic
+
+
+def dataloader_options(
+    device: torch.device,
+    num_workers: int,
+) -> dict[str, object]:
+    options: dict[str, object] = {
+        "num_workers": num_workers,
+        "pin_memory": device.type == "cuda",
+    }
+    if num_workers > 0:
+        options["persistent_workers"] = True
+        options["prefetch_factor"] = 2
+    return options
 
 
 def save_json(path: str | Path, value: Any) -> None:

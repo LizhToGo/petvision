@@ -17,7 +17,7 @@ from petvision.data.transforms import PairedTransform
 from petvision.models import build_classifier
 from petvision.models.unet import UNet
 from petvision.training.loops import run_classification_epoch
-from petvision.training.utils import save_json, set_seed
+from petvision.training.utils import dataloader_options, save_json, set_seed
 
 
 def _device(value: str) -> torch.device:
@@ -148,6 +148,11 @@ def main() -> None:
         default=None,
         help="stop after this many non-improving validation epochs; 0 disables it",
     )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="allow nondeterministic GPU algorithms and benchmark fixed-size kernels",
+    )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
@@ -174,7 +179,7 @@ def main() -> None:
         raise SystemExit("--head-epochs must be non-negative")
     if args.early_stopping_patience is not None and args.early_stopping_patience < 0:
         raise SystemExit("--early-stopping-patience must be non-negative")
-    set_seed(args.seed)
+    set_seed(args.seed, deterministic=not args.fast)
     device = _device(args.device)
     resume_checkpoint = (
         torch.load(args.resume, map_location=device, weights_only=False)
@@ -259,15 +264,13 @@ def main() -> None:
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
+        **dataloader_options(device, args.num_workers),
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
+        **dataloader_options(device, args.num_workers),
     )
 
     segmenter = None
@@ -275,7 +278,7 @@ def main() -> None:
         segmenter = _load_segmenter(args.segmenter_checkpoint, device)
     if architecture == "resnet18":
         # Segmenter construction must not change the classifier's initialization.
-        set_seed(args.seed)
+        set_seed(args.seed, deterministic=not args.fast)
     model = build_classifier(
         num_classes=index.num_classes,
         architecture=architecture,
@@ -322,7 +325,7 @@ def main() -> None:
 
     print(
         f"device={device} mode={args.mode} architecture={architecture} "
-        f"schedule={schedule} train={len(train_dataset)} "
+        f"schedule={schedule} fast={args.fast} train={len(train_dataset)} "
         f"val={len(val_dataset)} start_epoch={start_epoch}"
     )
     for epoch in range(start_epoch, args.epochs + 1):
@@ -384,7 +387,7 @@ def main() -> None:
             ),
             "best_macro_f1": best_f1,
             "epochs_without_improvement": epochs_without_improvement,
-            "seed": args.seed,
+            "fast": args.fast,
             "history": history,
         }
         torch.save(checkpoint, output / "last.pt")

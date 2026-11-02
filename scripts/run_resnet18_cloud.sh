@@ -5,6 +5,8 @@ set -euo pipefail
 : "${DATA_ROOT:?Set DATA_ROOT to the Oxford-IIIT Pet dataset directory}"
 : "${SEGMENTATION_CHECKPOINT:?Set SEGMENTATION_CHECKPOINT to the trained U-Net checkpoint}"
 : "${RUN_DIR:?Set RUN_DIR to an existing, empty experiment directory}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
+NUM_WORKERS="${NUM_WORKERS:-8}"
 
 if [[ ! -d "$DATA_ROOT/images" || ! -d "$DATA_ROOT/annotations" ]]; then
     echo "Dataset not found under DATA_ROOT=$DATA_ROOT" >&2
@@ -31,23 +33,26 @@ echo "Training raw ResNet-18; results: $RUN_DIR"
 python -u scripts/train_classification.py \
     --root "$DATA_ROOT" --output "$RUN_DIR/raw" \
     --architecture resnet18 --pretrained --mode raw \
-    --epochs 20 --batch-size 4 --image-size 256 --learning-rate 0.0001 \
-    --seed 42 --device cuda
+    --epochs 20 --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
+    --image-size 256 --learning-rate 0.0001 \
+    --seed 42 --device cuda --fast
 
 echo "Training guided ResNet-18"
 python -u scripts/train_classification.py \
     --root "$DATA_ROOT" --output "$RUN_DIR/guided" \
     --architecture resnet18 --pretrained --mode guided \
     --segmenter-checkpoint "$SEGMENTATION_CHECKPOINT" \
-    --epochs 20 --batch-size 4 --image-size 256 --learning-rate 0.0001 \
-    --seed 42 --device cuda
+    --epochs 20 --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
+    --image-size 256 --learning-rate 0.0001 \
+    --seed 42 --device cuda --fast
 
 echo "Selecting fusion weight on validation and evaluating on test"
 python -u scripts/evaluate_fusion.py \
     --root "$DATA_ROOT" --segmentation-checkpoint "$SEGMENTATION_CHECKPOINT" \
     --raw-checkpoint "$RUN_DIR/raw/best.pt" \
     --guided-checkpoint "$RUN_DIR/guided/best.pt" \
-    --output "$RUN_DIR/fusion" --batch-size 4 --lambda-step 0.05 \
+    --output "$RUN_DIR/fusion" --batch-size "$BATCH_SIZE" \
+    --num-workers "$NUM_WORKERS" --lambda-step 0.05 \
     --seed 42 --device cuda
 
 echo "Experiment complete: $RUN_DIR"

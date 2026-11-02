@@ -11,7 +11,8 @@ HEAD_EPOCHS="${HEAD_EPOCHS:-2}"
 BACKBONE_LR="${BACKBONE_LR:-0.00001}"
 HEAD_LR="${HEAD_LR:-0.0001}"
 PATIENCE="${PATIENCE:-4}"
-BATCH_SIZE="${BATCH_SIZE:-4}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
+NUM_WORKERS="${NUM_WORKERS:-8}"
 
 if [[ ! -d "$DATA_ROOT/images" || ! -d "$DATA_ROOT/annotations" ]]; then
     echo "Dataset not found under DATA_ROOT=$DATA_ROOT" >&2
@@ -40,7 +41,8 @@ COMMON_ARGS=(
     --backbone-learning-rate "$BACKBONE_LR"
     --head-learning-rate "$HEAD_LR"
     --early-stopping-patience "$PATIENCE"
-    --batch-size "$BATCH_SIZE" --image-size 256 --seed 42 --device cuda
+    --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS"
+    --image-size 256 --seed 42 --device cuda --fast
 )
 
 echo "Training staged raw ResNet-18; results: $RUN_DIR"
@@ -59,7 +61,8 @@ python -u scripts/evaluate_fusion.py \
     --root "$DATA_ROOT" --segmentation-checkpoint "$SEGMENTATION_CHECKPOINT" \
     --raw-checkpoint "$RUN_DIR/raw/best.pt" \
     --guided-checkpoint "$RUN_DIR/guided/best.pt" \
-    --output "$RUN_DIR/fusion" --batch-size "$BATCH_SIZE" --lambda-step 0.05 \
+    --output "$RUN_DIR/fusion" --batch-size "$BATCH_SIZE" \
+    --num-workers "$NUM_WORKERS" --lambda-step 0.05 \
     --seed 42 --device cuda
 
 echo "Experiment complete: $RUN_DIR"
