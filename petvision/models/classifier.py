@@ -78,7 +78,31 @@ class ResNet18Classifier(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.classifier(self.backbone(x))
 
+class FeatureFusionHead(nn.Module):
+    """Classify concatenated raw and guided ResNet features."""
 
+    def __init__(
+        self,
+        num_classes: int,
+        feature_dim: int = 512,
+        hidden_dim: int = 256,
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.classifier = nn.Sequential(
+            nn.Linear(feature_dim * 2, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes),
+        )
+
+    def forward(
+        self,
+        raw_feature: torch.Tensor,
+        guided_feature: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.classifier(torch.cat((raw_feature, guided_feature), dim=1))
 def build_classifier(
     num_classes: int, architecture: str = "small_cnn", pretrained: bool = False
 ) -> nn.Module:

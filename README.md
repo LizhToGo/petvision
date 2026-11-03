@@ -361,6 +361,30 @@ The test set is not used to select `lambda`.
 320×320 高分辨率对照可设置 `IMAGE_SIZE=320`，同时建议将
 `BATCH_SIZE` 调整为 16；该实验应使用新的结果目录，不覆盖 256×256
 ColorJitter 基线。
+## 特征级融合
+
+在冻结 raw/guided ResNet-18 backbone 的前提下，训练一个融合头：
+
+```text
+raw feature (512) + guided feature (512)
+        -> Linear(1024, 256) -> ReLU -> Dropout -> 37 classes
+```
+
+云端脚本：
+
+```bash
+export DATA_ROOT=/mnt/workspace/petvision/data/oxford-iiit-pet
+export SEGMENTATION_CHECKPOINT=/mnt/workspace/petvision-runs/run-RPdAyBz7/segmentation/best.pt
+export RAW_CHECKPOINT=/mnt/workspace/petvision-runs/resnet18-color-.../raw/best.pt
+export GUIDED_CHECKPOINT=/mnt/workspace/petvision-runs/resnet18-color-.../guided/best.pt
+export RUN_DIR=/mnt/workspace/petvision-runs/feature-fusion-$(date +%Y%m%d-%H%M%S)
+mkdir -p "$RUN_DIR"
+bash scripts/run_feature_fusion_cloud.sh
+```
+
+该实验的测试集评价保存在 `evaluation/metrics.json`。测试集不参与融合头
+训练或超参数选择；当前第一阶段只训练融合头，不解冻两个 backbone。
+
 
 ## 背景鲁棒性实验
 
