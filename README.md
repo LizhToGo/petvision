@@ -230,6 +230,169 @@ GPU 算子和 benchmark，正式报告应记录该设置。
 扰动；复现当前无增强基线时设置 `AUGMENTATION=none`。验证集与测试集
 不使用增强。
 
+### 6. ResNet-50 原图分类基线
+
+下一轮只训练 raw 分类器，不重训 U-Net、不训练 guided 或融合头，也不自动
+评价测试集。`resnet50 --pretrained` 使用 torchvision 的
+`ResNet50_Weights.IMAGENET1K_V2`；ResNet-18 仍使用 V1，已有 checkpoint
+的参数键和加载方式不变。这是模型与预训练方案的对照，不是纯网络深度消融。
+
+正式配置：256×256、ColorJitter 与水平翻转、FP32、batch 32、AdamW
+weight decay 0.01；前 4 轮冻结 backbone，之后解冻；backbone/head 学习率
+分别为 1e-5/1e-4，最多 30 轮，验证 Macro-F1 连续 6 轮不改善时早停。
+本轮不增加余弦衰减、TTA 或新的融合模块。
+
+分类训练现在使用两个独立的种子：`--split-seed` 固定划分，`--seed`
+只控制模型初始化、shuffle 与增强。两者新运行均默认为 42；续训时默认从
+新 checkpoint 恢复。重复实验只改变 `--seed`，不要改变 `--split-seed`。
+新的 `split.json` 和 checkpoint 保存具体训练/验证图像 ID；续训时若样本
+列表不同会报错。旧分类 checkpoint 没有保存这些信息，续训时需明确提供
+原有划分参数。现有评价脚本的 `--seed` 仍控制划分，应与分类训练的
+`--split-seed` 一致。
+
+从项目根目录启动，数据目录继续指向原有数据：
+
+```bash
+export DATA_ROOT=/mnt/workspace/petvision/data/oxford-iiit-pet
+export RUN_DIR=/mnt/workspace/petvision-runs/resnet50-256-color-raw-$(date +%Y%m%d-%H%M%S)-$$
+mkdir -p /mnt/workspace/petvision-runs
+mkdir "$RUN_DIR"
+
+# 可选性能预跑：真实训练数据、全模型反向传播；不保存模型，不选择精度方案。
+python -u -m scripts.benchmark_classification \
+  --root "$DATA_ROOT" --output "$RUN_DIR/benchmark" \
+  --architecture resnet50 --pretrained --image-size 256 \
+  --batch-sizes 32 64 128 --precisions fp32 bf16 \
+  --warmup 5 --steps 20 --num-workers 8
+
+# 第一轮正式对照固定 batch=32、FP32，不根据预跑自动更改。
+export BATCH_SIZE=32 NUM_WORKERS=8 IMAGE_SIZE=256
+export EPOCHS=30 HEAD_EPOCHS=4 PATIENCE=6
+export BACKBONE_LR=0.00001 HEAD_LR=0.0001 WEIGHT_DECAY=0.01
+export SPLIT_SEED=42 TRAINING_SEED=42
+export PRECISION=fp32
+nohup bash scripts/run_resnet50_raw_cloud.sh >"$RUN_DIR/train.log" 2>&1 &
+echo "PID=$!  RUN_DIR=$RUN_DIR"
+tail -f "$RUN_DIR/train.log"
+```
+
+预跑记录每组的吞吐、平均损失及峰值 allocated/reserved 显存。计时包含
+数据加载、前向、反向和 AdamW，不包含验证、完整评价指标或 checkpoint
+存盘；每组先预热并同步 GPU，再计时。不支持 BF16 或显存不足的组合会
+明确标记，不会静默切换精度。预跑权重直接丢弃，正式训练重新加载预训练
+权重。不得把本机 GPU 的预跑结果当作云端 GPU 的性能。
+
+结果文件：`environment.json` 记录设备和软件版本；`raw/config.json`、
+`raw/split.json`、`raw/dataset.json` 保存配置与划分；`raw/history.json`
+记录训练/验证曲线、耗时和 GPU 峰值显存；`raw/best.pt` 按验证 Macro-F1
+选择，`raw/last.pt` 用于续训。比较候选期间只使用验证集。
+
+中断后不要重新运行拒绝覆盖的云端脚本，改用：
+
+```bash
+python -u -m scripts.train_classification \
+  --root "$DATA_ROOT" --mode raw \
+  --resume "$RUN_DIR/raw/last.pt" --output "$RUN_DIR/raw" \
+  --epochs 30 --image-size 256 --batch-size 32 --num-workers 8 \
+  --device cuda --fast
+```
+
+续训恢复模型、优化器和训练阶段；不承诺与未中断运行逐位一致。现有
+`train_feature_fusion.py` 仍仅支持 ResNet-18 的冻结特征实验，不要将
+ResNet-50 checkpoint 传给该入口。
+
+### 7. BF16 正式训练对照
+
+完成 FP32 基线后，下一轮只改变训练精度；batch 仍为 32，划分、增强、
+学习率、冻结阶段和 early stopping 均保持一致。不要从上一轮 FP32
+`best.pt` 续训来充当 BF16 对照；新实验重新从同一 ImageNet V2 权重初始化。
+本轮不需要重复性能预跑，也不自动评价测试集。
+
+分类入口新增 `--precision fp32|bf16`；云端脚本使用 `PRECISION`，未设置
+时仍为 FP32。BF16 仅包裹分类器训练前向和损失计算，验证与原基线一样
+使用 FP32。参数与 AdamW 状态保留 FP32，不将整个模型转为 BF16。
+`config.json` 和 checkpoint 分别记录 `precision` 与 `validation_precision`；
+日志开头应显示 `precision=bf16 validation_precision=fp32`。CPU 或不支持
+原生 BF16 的 CUDA/ROCm 设备会明确报错，不会静默退回 FP32。
+
+在更新后的代码目录中执行，使用新的实验目录：
+
+```bash
+export DATA_ROOT=/mnt/workspace/petvision/data/oxford-iiit-pet
+export RUN_DIR=/mnt/workspace/petvision-runs/resnet50-256-color-raw-bf16-$(date +%Y%m%d-%H%M%S)-$$
+mkdir -p /mnt/workspace/petvision-runs
+mkdir "$RUN_DIR"
+export PRECISION=bf16 BATCH_SIZE=32 NUM_WORKERS=8 IMAGE_SIZE=256
+export EPOCHS=30 HEAD_EPOCHS=4 PATIENCE=6
+export BACKBONE_LR=0.00001 HEAD_LR=0.0001 WEIGHT_DECAY=0.01
+export SPLIT_SEED=42 TRAINING_SEED=42
+nohup bash scripts/run_resnet50_raw_cloud.sh >"$RUN_DIR/train.log" 2>&1 &
+echo "PID=$!  RUN_DIR=$RUN_DIR"
+tail -f "$RUN_DIR/train.log"
+```
+
+续训继续使用上一节的 `--resume` 命令；不传 `--precision` 时自动恢复
+checkpoint 中的精度，旧 checkpoint 缺少该字段时视为 FP32。显式指定
+与 checkpoint 不同的精度会报错，避免将两组实验混合。保存的是标准
+FP32 权重，现有 `classifier_from_checkpoint` 可直接恢复和推理。
+
+分析时比较验证 Macro-F1、损失曲线和稳定解冻阶段的 epoch 耗时；首次
+运行、首次解冻的开销单独记录。短预跑吞吐不等于完整实验总时间，单个
+种子的微小精度差异也不能直接认定为收益或退化。确认 BF16 后，再单独
+考虑 batch 64 或分割定位裁剪，不在本轮同时改变这些条件。
+### 8. 预测分割定位裁剪实验
+
+下一轮实验用冻结 U-Net 预测宠物前景框，从原始分辨率图像裁剪主体，再用
+ResNet-50 分类。裁剪框按前景概率阈值和边距生成；默认阈值 `0.5`、边距
+`0.15`。图像与 trimap 使用同一个框，之后再进行 256×256 预处理和训练
+增强。当前实验只生成 `trainval` cache，不使用测试集调参。
+
+`build_mask_crop_cache.py` 的 `predicted` 模式模拟实际部署；`oracle` 模式
+只用于诊断理想 mask 裁剪是否有帮助，不能作为系统成绩。训练脚本的
+`--mode crop` 要求一个完整的 normalized crop cache，并把 cache 元数据
+写入 `config.json`。预测框为空时记录并使用整图框，不能静默丢弃样本。
+
+云端直接运行预测 mask 裁剪训练：
+
+```bash
+export DATA_ROOT=/mnt/workspace/petvision/data/oxford-iiit-pet
+export SEGMENTATION_CHECKPOINT=/mnt/workspace/petvision-runs/run-RPdAyBz7/segmentation/best.pt
+export RUN_DIR=/mnt/workspace/petvision-runs/resnet50-256-color-crop-bf16-$(date +%Y%m%d-%H%M%S)-$$
+mkdir -p /mnt/workspace/petvision-runs
+mkdir "$RUN_DIR"
+
+export PRECISION=bf16 BATCH_SIZE=32 NUM_WORKERS=8 IMAGE_SIZE=256
+export EPOCHS=30 HEAD_EPOCHS=4 PATIENCE=6
+export BACKBONE_LR=0.00001 HEAD_LR=0.0001 WEIGHT_DECAY=0.01
+export SPLIT_SEED=42 TRAINING_SEED=42
+export CROP_THRESHOLD=0.5 CROP_MARGIN=0.15 CROP_BATCH_SIZE=64
+
+nohup bash scripts/run_resnet50_crop_cloud.sh \
+  >"$RUN_DIR/train.log" 2>&1 &
+echo "PID=$!  RUN_DIR=$RUN_DIR"
+tail -f "$RUN_DIR/train.log"
+```
+
+脚本顺序为：检查 GPU → 生成 `crop-cache.json` → 训练 crop ResNet-50。
+结果保存在 `crop/best.pt`、`crop/history.json` 和 `crop/config.json`；
+不评价测试集。先比较该结果与 BF16 raw 基线；如果主体 crop 有收益，再
+单独训练 global 分支并用验证集选择 global/local 概率融合权重。
+
+如果要做 oracle 诊断，不使用云端主脚本，先生成真值框：
+
+```bash
+python -u scripts/build_mask_crop_cache.py \
+  --root "$DATA_ROOT" \
+  --output "$RUN_DIR/oracle-crop-cache.json" \
+  --source oracle --split trainval \
+  --image-size 256 --margin 0.15 \
+  --batch-size 64 --num-workers 8 --device cuda
+```
+
+然后把训练命令中的 `--crop-cache` 指向该文件，并将输出改到新的目录。
+oracle 结果只用于判断“分割定位是否有潜力”，不能替代 predicted crop。
+
+
 ### Training loop meaning
 
 For each batch, the program loads and preprocesses images, runs a forward

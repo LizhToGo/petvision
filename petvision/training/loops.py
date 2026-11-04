@@ -75,6 +75,8 @@ def run_classification_epoch(
     segmenter: nn.Module | None = None,
     alpha: float = 0.25,
     oracle_mask: bool = False,
+    *,
+    precision: str = "fp32",
 ) -> dict[str, object]:
     training = optimizer is not None
     model.train(training)
@@ -98,8 +100,11 @@ def run_classification_epoch(
             images = _guided_inputs(images, segmenter, alpha)
         if training:
             optimizer.zero_grad(set_to_none=True)
-        logits = model(images)
-        loss = criterion(logits, labels)
+        with torch.autocast(
+            device_type=device.type, dtype=torch.bfloat16, enabled=precision == "bf16"
+        ):
+            logits = model(images)
+            loss = criterion(logits, labels)
         if training:
             loss.backward()
             optimizer.step()

@@ -11,10 +11,15 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from petvision.config import IMAGE_SIZE, RANDOM_SEED
-from petvision.data import OxfordIIITPetIndex
-from petvision.data.dataset import OxfordPetDataset
+from petvision.data import (
+    OxfordIIITPetIndex,
+    OxfordPetCropDataset,
+    OxfordPetDataset,
+    PairedTransform,
+    crop_cache_summary,
+    load_crop_cache,
+)
 from petvision.data.splits import stratified_train_val
-from petvision.data.transforms import PairedTransform
 from petvision.models import build_classifier
 from petvision.models.unet import UNet
 from petvision.training.loops import run_classification_epoch
@@ -61,11 +66,11 @@ def _set_backbone_trainable(
     architecture: str,
     trainable: bool,
 ) -> None:
-    if architecture != "resnet18":
+    if architecture not in ("resnet18", "resnet50"):
         return
     setter = getattr(model, "set_backbone_trainable", None)
     if setter is None:
-        raise TypeError("ResNet-18 model has no backbone trainability control")
+        raise TypeError("ResNet model has no backbone trainability control")
     setter(trainable)
 
 
@@ -76,8 +81,9 @@ def _build_optimizer(
     learning_rate: float,
     backbone_learning_rate: float,
     head_learning_rate: float,
+    weight_decay: float,
 ) -> torch.optim.Optimizer:
-    if architecture == "resnet18" and schedule == "staged":
+    if architecture in ("resnet18", "resnet50") and schedule == "staged":
         return torch.optim.AdamW(
             [
                 {
@@ -88,25 +94,30 @@ def _build_optimizer(
                     "params": getattr(model, "classifier").parameters(),
                     "lr": head_learning_rate,
                 },
-            ]
+            ],
+            weight_decay=weight_decay,
         )
-    return torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    return torch.optim.AdamW(
+        model.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path("data/oxford-iiit-pet"))
     parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument("--mode", choices=("raw", "guided"), default="raw")
+    parser.add_argument(
+        "--mode", choices=("raw", "guided", "crop"), default="raw"
+    )
     parser.add_argument(
         "--architecture",
-        choices=("small_cnn", "resnet18"),
+        choices=("small_cnn", "resnet18", "resnet50"),
         default=None,
     )
     parser.add_argument(
         "--pretrained",
         action="store_true",
-        help="initialize ResNet-18 with ImageNet-1K V1 weights",
+        help="initialize ResNet-18 with ImageNet V1 or ResNet-50 with ImageNet V2",
     )
     parser.add_argument(
         "--augmentation",
@@ -119,12 +130,19 @@ def main() -> None:
         type=Path,
         default=Path("artifacts/segmentation/best.pt"),
     )
+    parser.add_argument(
+        "--crop-cache",
+        type=Path,
+        default=None,
+        help="normalized foreground crop cache required by crop mode",
+    )
     parser.add_argument("--alpha", type=float, default=0.25)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=IMAGE_SIZE)
-    parser.add_argument("--val-fraction", type=float, default=0.15)
+    parser.add_argument("--val-fraction", type=float, default=None)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument(
         "--schedule",
         choices=("flat", "staged"),
@@ -162,7 +180,18 @@ def main() -> None:
     )
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--seed", type=int, default=RANDOM_SEED)
+    parser.add_argument(
+        "--precision", choices=("fp32", "bf16"), default=None,
+        help="classifier training precision; validation always uses FP32",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="training randomness only; defaults to 42 or the resume checkpoint",
+    )
+    parser.add_argument(
+        "--split-seed", type=int, default=None,
+        help="fixed train/validation split; defaults to 42 or the resume checkpoint",
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -182,17 +211,48 @@ def main() -> None:
             f"Guided mode requires a segmentation checkpoint: "
             f"{args.segmenter_checkpoint}"
         )
+    if args.mode == "crop" and (
+        args.crop_cache is None or not args.crop_cache.is_file()
+    ):
+        raise SystemExit(
+            "Crop mode requires an existing normalized crop cache: "
+            f"{args.crop_cache}"
+        )
     if args.head_epochs is not None and args.head_epochs < 0:
         raise SystemExit("--head-epochs must be non-negative")
     if args.early_stopping_patience is not None and args.early_stopping_patience < 0:
         raise SystemExit("--early-stopping-patience must be non-negative")
-    set_seed(args.seed, deterministic=not args.fast)
     device = _device(args.device)
     resume_checkpoint = (
         torch.load(args.resume, map_location=device, weights_only=False)
         if args.resume is not None
         else None
     )
+    saved = resume_checkpoint or {}
+    checkpoint_precision = (
+        saved.get("precision", "fp32") if resume_checkpoint is not None else None
+    )
+    if args.precision is not None and checkpoint_precision is not None:
+        if args.precision != checkpoint_precision:
+            raise SystemExit("--precision does not match the resume checkpoint")
+    precision = args.precision or checkpoint_precision or "fp32"
+    if precision == "bf16":
+        if device.type != "cuda":
+            raise SystemExit("BF16 training requires a CUDA/ROCm GPU")
+        with torch.cuda.device(device):
+            if not torch.cuda.is_bf16_supported(including_emulation=False):
+                raise SystemExit("The selected CUDA/ROCm GPU does not support BF16")
+    if args.seed is None:
+        args.seed = int(saved.get("training_seed", RANDOM_SEED))
+    if args.split_seed is None:
+        args.split_seed = int(saved.get("split_seed", RANDOM_SEED))
+    if args.val_fraction is None:
+        args.val_fraction = float(saved.get("val_fraction", 0.15))
+    weight_decay = (
+        args.weight_decay if args.weight_decay is not None
+        else float(saved.get("weight_decay", 0.01))
+    )
+    set_seed(args.seed, deterministic=not args.fast)
     checkpoint_architecture = (
         resume_checkpoint.get("architecture", "small_cnn")
         if resume_checkpoint is not None
@@ -202,8 +262,8 @@ def main() -> None:
         if args.architecture != checkpoint_architecture:
             raise SystemExit("--architecture does not match the resume checkpoint")
     architecture = args.architecture or checkpoint_architecture or "small_cnn"
-    if args.pretrained and architecture != "resnet18":
-        raise SystemExit("--pretrained is only supported for resnet18")
+    if args.pretrained and architecture not in ("resnet18", "resnet50"):
+        raise SystemExit("--pretrained requires resnet18 or resnet50")
     checkpoint_schedule = (
         resume_checkpoint.get("schedule", "flat")
         if resume_checkpoint is not None
@@ -222,17 +282,8 @@ def main() -> None:
         if args.augmentation != checkpoint_augmentation:
             raise SystemExit("--augmentation does not match the resume checkpoint")
     augmentation = args.augmentation or checkpoint_augmentation or "none"
-    if schedule == "staged" and architecture != "resnet18":
-        raise SystemExit("--schedule staged is only supported for resnet18")
-    pretrained_source = (
-        resume_checkpoint.get("pretrained_source")
-        if resume_checkpoint is not None
-        else (
-            "torchvision:ResNet18_Weights.IMAGENET1K_V1"
-            if args.pretrained
-            else None
-        )
-    )
+    if schedule == "staged" and architecture not in ("resnet18", "resnet50"):
+        raise SystemExit("--schedule staged requires resnet18 or resnet50")
     head_epochs = args.head_epochs
     if head_epochs is None:
         head_epochs = int(
@@ -266,20 +317,40 @@ def main() -> None:
         )
 
     index = OxfordIIITPetIndex(args.root)
+    crop_metadata: dict[str, object] | None = None
+    crop_boxes = None
+    if args.mode == "crop":
+        crop_metadata, crop_boxes = load_crop_cache(args.crop_cache)
     train_records, val_records = stratified_train_val(
-        index.records("trainval"), args.val_fraction, args.seed
+        index.records("trainval"), args.val_fraction, args.split_seed
     )
     if args.limit > 0:
         train_records = train_records[: args.limit]
         val_records = val_records[: max(1, args.limit // 4)]
+    split = {
+        "split_seed": args.split_seed,
+        "val_fraction": args.val_fraction,
+        "train_image_ids": [record.image_id for record in train_records],
+        "validation_image_ids": [record.image_id for record in val_records],
+    }
+    if "split" in saved and split != saved["split"]:
+        raise SystemExit("Training/validation records differ from the resume checkpoint")
     transform_train = PairedTransform(
         args.image_size,
         train=True,
         color_jitter=augmentation == "color",
     )
     transform_val = PairedTransform(args.image_size, train=False)
-    train_dataset = OxfordPetDataset(index, train_records, transform_train)
-    val_dataset = OxfordPetDataset(index, val_records, transform_val)
+    if args.mode == "crop":
+        train_dataset = OxfordPetCropDataset(
+            index, train_records, transform_train, crop_boxes
+        )
+        val_dataset = OxfordPetCropDataset(
+            index, val_records, transform_val, crop_boxes
+        )
+    else:
+        train_dataset = OxfordPetDataset(index, train_records, transform_train)
+        val_dataset = OxfordPetDataset(index, val_records, transform_val)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -296,7 +367,7 @@ def main() -> None:
     segmenter = None
     if args.mode == "guided":
         segmenter = _load_segmenter(args.segmenter_checkpoint, device)
-    if architecture == "resnet18":
+    if architecture in ("resnet18", "resnet50"):
         # Segmenter construction must not change the classifier's initialization.
         set_seed(args.seed, deterministic=not args.fast)
     model = build_classifier(
@@ -304,6 +375,10 @@ def main() -> None:
         architecture=architecture,
         pretrained=args.pretrained and resume_checkpoint is None,
     ).to(device)
+    pretrained_source = (
+        saved.get("pretrained_source") if resume_checkpoint is not None
+        else getattr(model, "pretrained_source", None)
+    )
     start_epoch_hint = (
         int(resume_checkpoint.get("epoch", 0)) + 1
         if resume_checkpoint is not None
@@ -318,6 +393,7 @@ def main() -> None:
         learning_rate,
         backbone_learning_rate,
         head_learning_rate,
+        weight_decay,
     )
     criterion = nn.CrossEntropyLoss()
     output = args.output or (
@@ -343,14 +419,57 @@ def main() -> None:
             f"start={start_epoch} epochs={args.epochs}"
         )
 
+    config = {
+        "root": str(args.root),
+        "image_size": args.image_size,
+        "class_names": list(index.class_names),
+        "mode": args.mode,
+        "architecture": architecture,
+        "pretrained_source": pretrained_source,
+        "augmentation": augmentation,
+        "alpha": args.alpha,
+        "learning_rate": learning_rate,
+        "backbone_learning_rate": backbone_learning_rate,
+        "head_learning_rate": head_learning_rate,
+        "weight_decay": optimizer.param_groups[0]["weight_decay"],
+        "schedule": schedule,
+        "head_epochs": head_epochs,
+        "early_stopping_patience": early_stopping_patience,
+        "val_fraction": args.val_fraction,
+        "training_seed": args.seed,
+        "split_seed": args.split_seed,
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "epochs": args.epochs,
+        "precision": precision,
+        "validation_precision": "fp32",
+        "segmenter_checkpoint": (
+            str(args.segmenter_checkpoint) if args.mode == "guided" else None
+        ),
+        "crop_cache": str(args.crop_cache) if args.mode == "crop" else None,
+        "crop_cache_metadata": (
+            crop_cache_summary(crop_metadata, crop_boxes)
+            if args.mode == "crop"
+            else None
+        ),
+        "fast": args.fast,
+    }
+    save_json(output / "config.json", config)
+    save_json(output / "split.json", split)
+    save_json(output / "dataset.json", index.summary())
+
     print(
         f"device={device} mode={args.mode} architecture={architecture} "
         f"schedule={schedule} augmentation={augmentation} fast={args.fast} "
-        f"val={len(val_dataset)} start_epoch={start_epoch}"
+        f"train={len(train_dataset)} val={len(val_dataset)} "
+        f"split_seed={args.split_seed} training_seed={args.seed} "
+        f"precision={precision} validation_precision=fp32 start_epoch={start_epoch}"
     )
     for epoch in range(start_epoch, args.epochs + 1):
         backbone_trainable = schedule != "staged" or epoch > head_epochs
         _set_backbone_trainable(model, architecture, backbone_trainable)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         stage = "full" if backbone_trainable else "head"
         train_started = time.perf_counter()
         train_metrics = run_classification_epoch(
@@ -361,6 +480,7 @@ def main() -> None:
             optimizer,
             segmenter,
             args.alpha,
+            precision=precision,
         )
         train_seconds = time.perf_counter() - train_started
         validation_started = time.perf_counter()
@@ -388,6 +508,11 @@ def main() -> None:
             "validation": val_metrics,
         }
         history.append(row)
+        if device.type == "cuda":
+            row["memory"] = {
+                "peak_allocated_mib": torch.cuda.max_memory_allocated(device) / 2**20,
+                "peak_reserved_mib": torch.cuda.max_memory_reserved(device) / 2**20,
+            }
         is_best = val_metrics["macro_f1"] > best_f1
         if is_best:
             best_f1 = float(val_metrics["macro_f1"])
@@ -395,29 +520,13 @@ def main() -> None:
         else:
             epochs_without_improvement += 1
         checkpoint = {
+            **config,
+            "split": split,
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "epoch": epoch,
-            "image_size": args.image_size,
-            "class_names": list(index.class_names),
-            "mode": args.mode,
-            "architecture": architecture,
-            "augmentation": augmentation,
-            "alpha": args.alpha,
-            "learning_rate": learning_rate,
-            "backbone_learning_rate": backbone_learning_rate,
-            "head_learning_rate": head_learning_rate,
-            "schedule": schedule,
-            "head_epochs": head_epochs,
-            "early_stopping_patience": early_stopping_patience,
-            "val_fraction": args.val_fraction,
-            "batch_size": args.batch_size,
-            "segmenter_checkpoint": (
-                str(args.segmenter_checkpoint) if args.mode == "guided" else None
-            ),
             "best_macro_f1": best_f1,
             "epochs_without_improvement": epochs_without_improvement,
-            "fast": args.fast,
             "history": history,
         }
         torch.save(checkpoint, output / "last.pt")
@@ -443,7 +552,6 @@ def main() -> None:
                 f"patience={early_stopping_patience}"
             )
             break
-    save_json(output / "dataset.json", index.summary())
 
 
 if __name__ == "__main__":

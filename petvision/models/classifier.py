@@ -48,15 +48,31 @@ class SmallCNN(nn.Module):
         return self.classifier(self.pool(self.features(x)))
 
 
-class ResNet18Classifier(nn.Module):
-    """ResNet-18 backbone with a task-specific classification head."""
+class ResNetClassifier(nn.Module):
+    """ResNet-18 or ResNet-50 with a task-specific classification head."""
 
-    def __init__(self, num_classes: int, pretrained: bool = False) -> None:
+    def __init__(
+        self, num_classes: int, architecture: str, pretrained: bool = False
+    ) -> None:
         super().__init__()
-        from torchvision.models import ResNet18_Weights, resnet18
+        from torchvision.models import (
+            ResNet18_Weights,
+            ResNet50_Weights,
+            resnet18,
+            resnet50,
+        )
 
-        weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
-        self.backbone = resnet18(weights=weights)
+        builder, default_weights = {
+            "resnet18": (resnet18, ResNet18_Weights.IMAGENET1K_V1),
+            "resnet50": (resnet50, ResNet50_Weights.IMAGENET1K_V2),
+        }[architecture]
+        weights = default_weights if pretrained else None
+        self.backbone = builder(weights=weights)
+        self.pretrained_source = (
+            f"torchvision:{weights.__class__.__name__}.{weights.name}"
+            if weights is not None
+            else None
+        )
         in_features = self.backbone.fc.in_features
         self.backbone.fc = nn.Identity()
         self.classifier = nn.Sequential(nn.Linear(in_features, num_classes))
@@ -69,7 +85,7 @@ class ResNet18Classifier(nn.Module):
         for parameter in self.classifier.parameters():
             parameter.requires_grad_(True)
 
-    def train(self, mode: bool = True) -> "ResNet18Classifier":
+    def train(self, mode: bool = True) -> "ResNetClassifier":
         super().train(mode)
         if mode and self.backbone_frozen:
             self.backbone.eval()
@@ -108,10 +124,10 @@ def build_classifier(
 ) -> nn.Module:
     if architecture == "small_cnn":
         if pretrained:
-            raise ValueError("Pretrained weights are only available for resnet18")
+            raise ValueError("Pretrained weights require resnet18 or resnet50")
         return SmallCNN(num_classes=num_classes)
-    if architecture == "resnet18":
-        return ResNet18Classifier(num_classes=num_classes, pretrained=pretrained)
+    if architecture in ("resnet18", "resnet50"):
+        return ResNetClassifier(num_classes, architecture, pretrained=pretrained)
     raise ValueError(f"Unknown classifier architecture: {architecture}")
 
 
