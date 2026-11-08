@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Mapping
 
+import numpy as np
 from PIL import Image
 
 CropBox = tuple[float, float, float, float]
@@ -36,12 +37,28 @@ def load_crop_cache(path: str | Path) -> tuple[dict[str, object], dict[str, Crop
     return metadata, boxes
 
 
-def crop_image_pair(
-    image: Image.Image,
-    trimap: Image.Image,
-    box: CropBox,
-) -> tuple[Image.Image, Image.Image]:
-    """Crop an image/trimap pair using a normalized box."""
+def box_from_mask(mask: np.ndarray, margin: float) -> tuple[CropBox, bool]:
+    """Locate all foreground pixels, expand the box, or retain the empty image."""
+
+    rows, columns = np.where(mask)
+    if rows.size == 0:
+        return (0.0, 0.0, 1.0, 1.0), True
+    height, width = mask.shape
+    left = float(columns.min()) / width
+    right = float(columns.max() + 1) / width
+    top = float(rows.min()) / height
+    bottom = float(rows.max() + 1) / height
+    box_width, box_height = right - left, bottom - top
+    return (
+        max(0.0, left - margin * box_width),
+        max(0.0, top - margin * box_height),
+        min(1.0, right + margin * box_width),
+        min(1.0, bottom + margin * box_height),
+    ), False
+
+
+def crop_image(image: Image.Image, box: CropBox) -> Image.Image:
+    """Crop one RGB or grayscale image using a normalized box."""
 
     width, height = image.size
     left, top, right, bottom = box
@@ -52,10 +69,30 @@ def crop_image_pair(
         max(1, min(height, int(round(bottom * height)))),
     )
     if pixel_box[2] <= pixel_box[0]:
-        pixel_box = (pixel_box[0], pixel_box[1], min(width, pixel_box[0] + 1), pixel_box[3])
+        pixel_box = (
+            pixel_box[0],
+            pixel_box[1],
+            min(width, pixel_box[0] + 1),
+            pixel_box[3],
+        )
     if pixel_box[3] <= pixel_box[1]:
-        pixel_box = (pixel_box[0], pixel_box[1], pixel_box[2], min(height, pixel_box[1] + 1))
-    return image.crop(pixel_box), trimap.crop(pixel_box)
+        pixel_box = (
+            pixel_box[0],
+            pixel_box[1],
+            pixel_box[2],
+            min(height, pixel_box[1] + 1),
+        )
+    return image.crop(pixel_box)
+
+
+def crop_image_pair(
+    image: Image.Image,
+    trimap: Image.Image,
+    box: CropBox,
+) -> tuple[Image.Image, Image.Image]:
+    """Crop an image/trimap pair using a normalized box."""
+
+    return crop_image(image, box), crop_image(trimap, box)
 
 
 def crop_cache_summary(

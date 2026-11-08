@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from petvision.data import OxfordIIITPetIndex, OxfordPetDataset, PairedTransform
+from petvision.data.crops import CropBox, box_from_mask
 from petvision.models import UNet
 from petvision.training.utils import dataloader_options, save_json, set_seed
 
@@ -19,23 +20,6 @@ def _device(value: str) -> torch.device:
     return torch.device(value)
 
 
-def _box_from_mask(mask: torch.Tensor, margin: float) -> tuple[list[float], bool]:
-    height, width = mask.shape
-    coordinates = torch.where(mask)
-    if coordinates[0].numel() == 0:
-        return [0.0, 0.0, 1.0, 1.0], True
-    top = float(coordinates[0].min().item()) / height
-    bottom = float(coordinates[0].max().item() + 1) / height
-    left = float(coordinates[1].min().item()) / width
-    right = float(coordinates[1].max().item() + 1) / width
-    box_width = right - left
-    box_height = bottom - top
-    return [
-        max(0.0, left - margin * box_width),
-        max(0.0, top - margin * box_height),
-        min(1.0, right + margin * box_width),
-        min(1.0, bottom + margin * box_height),
-    ], False
 
 
 def _load_segmenter(path: Path, device: torch.device) -> tuple[UNet, int]:
@@ -93,7 +77,7 @@ def main() -> None:
         shuffle=False,
         **dataloader_options(device, args.num_workers),
     )
-    boxes: dict[str, list[float]] = {}
+    boxes: dict[str, CropBox] = {}
     fallback_count = 0
     foreground_fractions: list[float] = []
     with torch.inference_mode():
@@ -104,11 +88,11 @@ def main() -> None:
                 masks = probabilities >= args.threshold
             else:
                 masks = (batch["mask"] == 1) | (batch["mask"] == 255)
-            for image_id, mask in zip(batch["image_id"], masks):
-                box, fallback = _box_from_mask(mask.cpu(), args.margin)
+            for image_id, mask in zip(batch["image_id"], masks.cpu().numpy()):
+                box, fallback = box_from_mask(mask, args.margin)
                 boxes[str(image_id)] = box
                 fallback_count += int(fallback)
-                foreground_fractions.append(float(mask.float().mean().item()))
+                foreground_fractions.append(float(mask.mean()))
 
     metadata = {
         "root": str(index.root),

@@ -1,6 +1,12 @@
 """Dataset indexing and preprocessing utilities."""
 
-from .crops import CropBox, crop_cache_summary, crop_image_pair, load_crop_cache
+from .crops import (
+    CropBox,
+    crop_cache_summary,
+    crop_image,
+    crop_image_pair,
+    load_crop_cache,
+)
 from .dataset import OxfordPetCropDataset, OxfordPetDataset
 from .oxford_pet import (
     OxfordIIITPetIndex,
@@ -19,6 +25,7 @@ __all__ = [
     "PairedTransform",
     "PetRecord",
     "crop_cache_summary",
+    "crop_image",
     "crop_image_pair",
     "image_to_tensor",
     "load_crop_cache",

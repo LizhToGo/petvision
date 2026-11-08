@@ -100,6 +100,21 @@ def _build_optimizer(
     return torch.optim.AdamW(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
+def _build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    lr_schedule: str,
+    t_max: int,
+    eta_min: float,
+) -> torch.optim.lr_scheduler.LRScheduler | None:
+    if lr_schedule == "none":
+        return None
+    return torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, t_max),
+        eta_min=eta_min,
+    )
+
+
 
 
 def main() -> None:
@@ -166,6 +181,18 @@ def main() -> None:
         type=float,
         default=None,
         help="learning rate for the classifier head in staged mode",
+    )
+    parser.add_argument(
+        "--lr-schedule",
+        choices=("none", "cosine"),
+        default=None,
+        help="learning-rate schedule; cosine decays after each full-training epoch",
+    )
+    parser.add_argument(
+        "--cosine-eta-min",
+        type=float,
+        default=None,
+        help="minimum learning rate for cosine scheduling",
     )
     parser.add_argument(
         "--early-stopping-patience",
@@ -273,6 +300,15 @@ def main() -> None:
         if args.schedule != checkpoint_schedule:
             raise SystemExit("--schedule does not match the resume checkpoint")
     schedule = args.schedule or checkpoint_schedule or "flat"
+    checkpoint_lr_schedule = (
+        resume_checkpoint.get("lr_schedule", "none")
+        if resume_checkpoint is not None
+        else None
+    )
+    if args.lr_schedule is not None and checkpoint_lr_schedule is not None:
+        if args.lr_schedule != checkpoint_lr_schedule:
+            raise SystemExit("--lr-schedule does not match the resume checkpoint")
+    lr_schedule = args.lr_schedule or checkpoint_lr_schedule or "none"
     checkpoint_augmentation = (
         resume_checkpoint.get("augmentation", "none")
         if resume_checkpoint is not None
@@ -315,6 +351,42 @@ def main() -> None:
             if resume_checkpoint is not None
             else 0
         )
+    checkpoint_cosine_eta_min = (
+        resume_checkpoint.get("cosine_eta_min")
+        if resume_checkpoint is not None
+        else None
+    )
+    cosine_eta_min = (
+        args.cosine_eta_min
+        if args.cosine_eta_min is not None
+        else float(checkpoint_cosine_eta_min or 0.0)
+    )
+    scheduler_t_max = (
+        args.epochs - head_epochs if schedule == "staged" else args.epochs
+    )
+    saved_scheduler_t_max = saved.get("scheduler_t_max")
+    if (
+        resume_checkpoint is not None
+        and lr_schedule == "cosine"
+        and saved_scheduler_t_max is not None
+        and scheduler_t_max != int(saved_scheduler_t_max)
+    ):
+        raise SystemExit(
+            "--epochs/head-epochs do not match the cosine resume checkpoint"
+        )
+    if lr_schedule == "cosine":
+        minimum_initial_lr = (
+            min(backbone_learning_rate, head_learning_rate)
+            if schedule == "staged"
+            else learning_rate
+        )
+        if not 0.0 <= cosine_eta_min < minimum_initial_lr:
+            raise SystemExit(
+                "--cosine-eta-min must be non-negative and below the initial learning rates"
+            )
+    else:
+        cosine_eta_min = 0.0
+        scheduler_t_max = 0
 
     index = OxfordIIITPetIndex(args.root)
     crop_metadata: dict[str, object] | None = None
@@ -395,6 +467,12 @@ def main() -> None:
         head_learning_rate,
         weight_decay,
     )
+    scheduler = _build_scheduler(
+        optimizer,
+        lr_schedule,
+        scheduler_t_max,
+        cosine_eta_min,
+    )
     criterion = nn.CrossEntropyLoss()
     output = args.output or (
         Path("artifacts/classification/raw")
@@ -412,6 +490,8 @@ def main() -> None:
             model,
             optimizer,
         )
+        if scheduler is not None and resume_checkpoint.get("scheduler_state"):
+            scheduler.load_state_dict(resume_checkpoint["scheduler_state"])
         print(f"resuming from {args.resume} at epoch {start_epoch}")
     if start_epoch > args.epochs:
         raise SystemExit(
@@ -433,9 +513,10 @@ def main() -> None:
         "head_learning_rate": head_learning_rate,
         "weight_decay": optimizer.param_groups[0]["weight_decay"],
         "schedule": schedule,
+        "lr_schedule": lr_schedule,
+        "cosine_eta_min": cosine_eta_min,
+        "scheduler_t_max": scheduler_t_max,
         "head_epochs": head_epochs,
-        "early_stopping_patience": early_stopping_patience,
-        "val_fraction": args.val_fraction,
         "training_seed": args.seed,
         "split_seed": args.split_seed,
         "batch_size": args.batch_size,
@@ -463,7 +544,8 @@ def main() -> None:
         f"schedule={schedule} augmentation={augmentation} fast={args.fast} "
         f"train={len(train_dataset)} val={len(val_dataset)} "
         f"split_seed={args.split_seed} training_seed={args.seed} "
-        f"precision={precision} validation_precision=fp32 start_epoch={start_epoch}"
+        f"precision={precision} validation_precision=fp32 "
+        f"lr_schedule={lr_schedule} start_epoch={start_epoch}"
     )
     for epoch in range(start_epoch, args.epochs + 1):
         backbone_trainable = schedule != "staged" or epoch > head_epochs
@@ -495,6 +577,9 @@ def main() -> None:
                 args.alpha,
             )
         validation_seconds = time.perf_counter() - validation_started
+        current_learning_rates = [
+            float(group["lr"]) for group in optimizer.param_groups
+        ]
         row = {
             "epoch": epoch,
             "stage": stage,
@@ -506,6 +591,7 @@ def main() -> None:
             },
             "train": train_metrics,
             "validation": val_metrics,
+            "learning_rates": current_learning_rates,
         }
         history.append(row)
         if device.type == "cuda":
@@ -513,6 +599,10 @@ def main() -> None:
                 "peak_allocated_mib": torch.cuda.max_memory_allocated(device) / 2**20,
                 "peak_reserved_mib": torch.cuda.max_memory_reserved(device) / 2**20,
             }
+        if scheduler is not None and (
+            schedule != "staged" or stage == "full"
+        ):
+            scheduler.step()
         is_best = val_metrics["macro_f1"] > best_f1
         if is_best:
             best_f1 = float(val_metrics["macro_f1"])
@@ -524,6 +614,9 @@ def main() -> None:
             "split": split,
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": (
+                scheduler.state_dict() if scheduler is not None else None
+            ),
             "epoch": epoch,
             "best_macro_f1": best_f1,
             "epochs_without_improvement": epochs_without_improvement,
@@ -539,6 +632,7 @@ def main() -> None:
             f"val_loss={val_metrics['loss']:.4f} "
             f"val_acc={val_metrics['accuracy']:.4f} "
             f"val_f1={val_metrics['macro_f1']:.4f} "
+            f"lr={','.join(f'{value:.2e}' for value in current_learning_rates)} "
             f"train_s={train_seconds:.1f} "
             f"val_s={validation_seconds:.1f} "
             f"samples_s={len(train_dataset) / max(train_seconds, 1e-9):.1f}"

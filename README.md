@@ -340,7 +340,44 @@ FP32 权重，现有 `classifier_from_checkpoint` 可直接恢复和推理。
 运行、首次解冻的开销单独记录。短预跑吞吐不等于完整实验总时间，单个
 种子的微小精度差异也不能直接认定为收益或退化。确认 BF16 后，再单独
 考虑 batch 64 或分割定位裁剪，不在本轮同时改变这些条件。
-### 8. 预测分割定位裁剪实验
+### 8. ResNet-50 原图余弦学习率对照
+
+该实验只在现有 ResNet-50 原图 FP32 基线的基础上增加余弦学习率调度；
+模型、ImageNet V2 权重、256×256 输入、ColorJitter、batch 32、数据划分、
+冻结阶段和初始学习率均不变。前 4 轮 head 阶段不衰减；第 5 轮解冻后，
+backbone/head 学习率从 `1e-5/1e-4` 按余弦曲线下降到 `0/0`。最多 30
+轮，暂时关闭 early stopping，让完整调度周期可比较；仍按验证 Macro-F1
+保存 `best.pt`。PyTorch 的 `CosineAnnealingLR` 不包含 warm restart。
+
+当前默认训练脚本不传 `--lr-schedule` 时仍是固定学习率。云端对照运行：
+
+```bash
+export DATA_ROOT=/mnt/workspace/petvision/data/oxford-iiit-pet
+export RUN_DIR=/mnt/workspace/petvision-runs/resnet50-256-color-raw-cosine-$(date +%Y%m%d-%H%M%S)-$$
+mkdir -p /mnt/workspace/petvision-runs
+mkdir "$RUN_DIR"
+
+export EPOCHS=30 HEAD_EPOCHS=4 PATIENCE=0
+export BATCH_SIZE=32 NUM_WORKERS=8 IMAGE_SIZE=256
+export BACKBONE_LR=0.00001 HEAD_LR=0.0001 WEIGHT_DECAY=0.01
+export PRECISION=fp32 LR_SCHEDULE=cosine COSINE_ETA_MIN=0
+export SPLIT_SEED=42 TRAINING_SEED=42
+
+nohup bash scripts/run_resnet50_raw_cloud.sh \
+  >"$RUN_DIR/train.log" 2>&1 &
+echo "PID=$!  RUN_DIR=$RUN_DIR"
+tail -f "$RUN_DIR/train.log"
+```
+
+日志应显示 `lr_schedule=cosine`，第 1～4 轮学习率保持初始值，
+解冻后的日志逐轮下降。`config.json`、`history.json` 和 checkpoint 保存
+调度器状态；断点续训必须使用相同的最终 `--epochs` 和 `--head-epochs`，
+否则会拒绝恢复，避免改变余弦曲线。
+
+这轮先只比较验证集。若 Macro-F1 没有提升，保留固定学习率基线；若提升，
+再用第二个训练种子复核，之后才评价测试集。
+
+### 9. 预测分割定位裁剪实验
 
 下一轮实验用冻结 U-Net 预测宠物前景框，从原始分辨率图像裁剪主体，再用
 ResNet-50 分类。裁剪框按前景概率阈值和边距生成；默认阈值 `0.5`、边距
@@ -596,6 +633,48 @@ bash scripts/run_feature_fusion_cloud.sh
 ```
 
 浏览器打开 `http://127.0.0.1:7860`。
+
+### ResNet-50 主体裁剪模型本地演示
+
+已训练的 crop checkpoint 不能当成 guided checkpoint 传给旧 `app.py`；
+新入口是 `scripts.app_crop`。它只需要分割模型与 crop 模型，原图模型
+可选，用于单张图片的并排对照，不做未经验证的概率融合。
+
+在项目根目录运行以下 PowerShell 命令；路径对应下载到本机的实验目录：
+
+```powershell
+$Results = "$HOME\Downloads\111"
+.venv\Scripts\python.exe -m scripts.app_crop `
+  --segmentation-checkpoint artifacts\formal_results\segmentation\best.pt `
+  --crop-checkpoint "$Results\resnet50-256-color-crop-bf16-20261104-231401-2911\crop\best.pt" `
+  --raw-checkpoint "$Results\resnet50-256-color-raw-bf16-20261103-231542-24717\raw\best.pt" `
+  --device auto --port 7861 --open-browser
+```
+
+浏览器打开 `http://127.0.0.1:7861`。如果端口已占用，可改为 `--port 7862`
+并访问对应地址。`auto` 优先使用可用 GPU；没有 GPU 时可用 CPU，不需要
+重新训练。旧的原图/guided 演示仍使用原入口和 7860 端口。
+
+页面支持上传照片后自动推理、按钮重跑和清空结果，展示预测 mask、前景与
+裁剪框、原分辨率主体裁剪，以及 raw/crop 各自的 Top-5 模型得分。
+上传图片的裁剪框在线计算，不查训练 cache，也不需要真实 mask。
+分割输入尺寸、概率阈值和边距从 crop 训练元数据恢复；裁剪后缩放保持与
+现有训练一致，当前不是保持纵横比的 padding 方案。原图分类器使用其
+自身 checkpoint 的输入尺寸。训练/缓存生成和本地推理共用前景框算法。
+
+只加载自己训练或可信来源的 checkpoint。分割模型应与生成 crop cache
+时使用的权重一致；oracle crop checkpoint 不支持上传图像的实际推理。
+页面仅监听本机回环地址，不创建公开分享链接。省略 `--raw-checkpoint`
+可只运行 U-Net 与 crop 分类器；`--examples` 后可附本地示例图片路径。
+
+看效果时先用正常单宠物照片，再分别观察侧脸、小目标、遮挡、复杂背景等
+场景。不要只挑成功样本；核对预测 mask 是否覆盖主体、红框是否截断目标，
+以及原图模型正确但 crop 错误的情况。softmax 得分不等于正确概率，本系统
+没有无宠物、未知品种拒识或多目标实例识别功能。
+
+单张图片演示不能替代数据集评价。当前原图/crop 的约 97% 是验证集结果，
+不是测试集或任意上传图片的准确率。固定划分下多次查看验证集也会产生
+选择偏差；最终测试集应在方案固定后评价，不用于反复选阈值、边距和权重。
 
 ## 程序结构
 

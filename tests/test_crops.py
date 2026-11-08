@@ -14,6 +14,7 @@ from petvision.data import (
     crop_image_pair,
     load_crop_cache,
 )
+from petvision.data.crops import box_from_mask
 
 
 class CropDataTest(unittest.TestCase):
@@ -45,14 +46,30 @@ class CropDataTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
-    def test_crop_pair_uses_same_box_for_image_and_trimap(self) -> None:
-        image = Image.new("RGB", (10, 8), color=(1, 2, 3))
-        trimap = Image.new("L", (10, 8), color=2)
+    def test_crop_pair_preserves_original_pixels_and_mask_alignment(self) -> None:
+        pixels = np.arange(80, dtype=np.uint8).reshape(8, 10)
+        image = Image.fromarray(np.stack([pixels, pixels, pixels], axis=-1))
+        trimap = Image.fromarray(pixels)
         cropped_image, cropped_trimap = crop_image_pair(
             image, trimap, (0.2, 0.25, 0.8, 0.75)
         )
-        self.assertEqual(cropped_image.size, (6, 4))
-        self.assertEqual(cropped_trimap.size, cropped_image.size)
+        np.testing.assert_array_equal(np.asarray(cropped_image)[:, :, 0], pixels[2:6, 2:8])
+        np.testing.assert_array_equal(np.asarray(cropped_trimap), pixels[2:6, 2:8])
+
+    def test_foreground_box_uses_exclusive_edges_and_relative_margin(self) -> None:
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        mask[10:50, 60:140] = 1
+        box, fallback = box_from_mask(mask, margin=0.1)
+        np.testing.assert_allclose(box, (0.26, 0.06, 0.74, 0.54))
+        self.assertFalse(fallback)
+
+    def test_empty_foreground_falls_back_but_full_foreground_does_not(self) -> None:
+        empty_box, empty_fallback = box_from_mask(np.zeros((8, 10)), margin=0.15)
+        full_box, full_fallback = box_from_mask(np.ones((8, 10)), margin=0.15)
+        self.assertEqual(empty_box, (0.0, 0.0, 1.0, 1.0))
+        self.assertEqual(full_box, empty_box)
+        self.assertTrue(empty_fallback)
+        self.assertFalse(full_fallback)
 
     def test_crop_dataset_requires_and_uses_cached_boxes(self) -> None:
         index = OxfordIIITPetIndex(self.root)
@@ -75,7 +92,7 @@ class CropDataTest(unittest.TestCase):
             boxes,
         )
         sample = dataset[0]
-        self.assertEqual(tuple(sample["image"].shape), (3, 4, 4))
+        np.testing.assert_array_equal(sample["mask"].numpy(), np.ones((4, 4), dtype=np.int64))
         with self.assertRaises(ValueError):
             OxfordPetCropDataset(
                 index,

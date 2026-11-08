@@ -17,6 +17,8 @@ IMAGE_SIZE="${IMAGE_SIZE:-256}"
 SPLIT_SEED="${SPLIT_SEED:-42}"
 TRAINING_SEED="${TRAINING_SEED:-42}"
 PRECISION="${PRECISION:-fp32}"
+LR_SCHEDULE="${LR_SCHEDULE:-none}"
+COSINE_ETA_MIN="${COSINE_ETA_MIN:-0.0}"
 
 if [[ ! -d "$DATA_ROOT/images" || ! -d "$DATA_ROOT/annotations" ]]; then
     echo "Dataset not found under DATA_ROOT=$DATA_ROOT" >&2
@@ -61,6 +63,7 @@ python -u -m scripts.train_classification \
     --architecture resnet50 --pretrained --mode raw --schedule staged \
     --epochs "$EPOCHS" --head-epochs "$HEAD_EPOCHS" \
     --backbone-learning-rate "$BACKBONE_LR" --head-learning-rate "$HEAD_LR" \
+    --lr-schedule "$LR_SCHEDULE" --cosine-eta-min "$COSINE_ETA_MIN" \
     --weight-decay "$WEIGHT_DECAY" --early-stopping-patience "$PATIENCE" \
     --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
     --image-size "$IMAGE_SIZE" --augmentation color --val-fraction 0.15 \
