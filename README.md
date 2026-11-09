@@ -374,15 +374,16 @@ tail -f "$RUN_DIR/train.log"
 调度器状态；断点续训必须使用相同的最终 `--epochs` 和 `--head-epochs`，
 否则会拒绝恢复，避免改变余弦曲线。
 
-这轮先只比较验证集。若 Macro-F1 没有提升，保留固定学习率基线；若提升，
-再用第二个训练种子复核，之后才评价测试集。
+这轮验证集结果已完成：cosine 的 Macro-F1 仅比固定学习率高 0.006
+个百分点，Top-1 和 Top-5 不变；冻结方案后已运行一次官方测试集评价，
+因此保留固定学习率 raw FP32 作为主模型，不再复核第二个 cosine seed。
 
-### 9. 预测分割定位裁剪实验
+### 9. 预测分割定位裁剪对照（已完成）
 
-下一轮实验用冻结 U-Net 预测宠物前景框，从原始分辨率图像裁剪主体，再用
-ResNet-50 分类。裁剪框按前景概率阈值和边距生成；默认阈值 `0.5`、边距
-`0.15`。图像与 trimap 使用同一个框，之后再进行 256×256 预处理和训练
-增强。当前实验只生成 `trainval` cache，不使用测试集调参。
+本实验使用冻结 U-Net 预测宠物前景框，从原始分辨率图像裁剪主体，再用
+ResNet-50 分类。裁剪框按前景概率阈值和边距生成；阈值为 `0.5`、边距为
+`0.15`。图像与 trimap 使用同一个框，之后进行 256×256 预处理和训练增强。
+训练集 cache 使用 `predicted` mask，不使用 oracle mask 作为系统成绩。
 
 `build_mask_crop_cache.py` 的 `predicted` 模式模拟实际部署；`oracle` 模式
 只用于诊断理想 mask 裁剪是否有帮助，不能作为系统成绩。训练脚本的
@@ -411,9 +412,9 @@ tail -f "$RUN_DIR/train.log"
 ```
 
 脚本顺序为：检查 GPU → 生成 `crop-cache.json` → 训练 crop ResNet-50。
-结果保存在 `crop/best.pt`、`crop/history.json` 和 `crop/config.json`；
-不评价测试集。先比较该结果与 BF16 raw 基线；如果主体 crop 有收益，再
-单独训练 global 分支并用验证集选择 global/local 概率融合权重。
+该实验已完成验证集和冻结后的测试集对照；预测裁剪 BF16 的测试 Accuracy
+为 93.077%，低于 raw FP32 的 93.540%，因此不进入主分类路径。`crop/best.pt`
+仍保留用于本地可视化和主体定位演示。
 
 如果要做 oracle 诊断，不使用云端主脚本，先生成真值框：
 
@@ -647,7 +648,7 @@ $Results = "$HOME\Downloads\111"
 .venv\Scripts\python.exe -m scripts.app_crop `
   --segmentation-checkpoint artifacts\formal_results\segmentation\best.pt `
   --crop-checkpoint "$Results\resnet50-256-color-crop-bf16-20261104-231401-2911\crop\best.pt" `
-  --raw-checkpoint "$Results\resnet50-256-color-raw-bf16-20261103-231542-24717\raw\best.pt" `
+  --raw-checkpoint "$Results\resnet50-256-color-raw-20261103-212216-24717\raw\best.pt" `
   --device auto --port 7861 --open-browser
 ```
 
@@ -672,9 +673,10 @@ $Results = "$HOME\Downloads\111"
 以及原图模型正确但 crop 错误的情况。softmax 得分不等于正确概率，本系统
 没有无宠物、未知品种拒识或多目标实例识别功能。
 
-单张图片演示不能替代数据集评价。当前原图/crop 的约 97% 是验证集结果，
-不是测试集或任意上传图片的准确率。固定划分下多次查看验证集也会产生
-选择偏差；最终测试集应在方案固定后评价，不用于反复选阈值、边距和权重。
+单张图片演示不能替代数据集评价。raw/crop 的约 97% 是固定验证集结果；
+冻结方案后的官方测试集结果为 raw FP32 Accuracy 93.540%、Macro-F1
+93.380%。测试指标和错误案例见 `FINAL_REPORT.md` 与
+`artifacts/final_evaluation/`，不再用测试集反复选择阈值、边距和权重。
 
 ## 程序结构
 
@@ -719,3 +721,19 @@ redistributing data or trained weights.
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 .venv\Scripts\python.exe -m compileall -q petvision scripts tests
 ```
+
+## 最终收尾结果
+
+完整结果、模型选择、测试集指标、混淆对和答辩限制见
+[`FINAL_REPORT.md`](FINAL_REPORT.md)。
+
+最终评价入口：
+
+```powershell
+.venv\Scripts\python.exe scripts\evaluate_final.py --help
+.venv\Scripts\python.exe scripts\export_final_errors.py --help
+```
+
+主模型测试集结果：Accuracy `93.540%`，Macro-F1 `93.380%`，Top-5
+Accuracy `99.782%`。模型权重和数据不提交到仓库，需按报告中的本地路径
+准备。
