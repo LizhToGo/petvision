@@ -394,7 +394,7 @@ ResNet-50 分类。裁剪框按前景概率阈值和边距生成；阈值为 `0.
 
 ```bash
 export DATA_ROOT=/mnt/workspace/petvision/data/oxford-iiit-pet
-export SEGMENTATION_CHECKPOINT=/mnt/workspace/petvision-runs/run-RPdAyBz7/segmentation/best.pt
+export SEGMENTATION_CHECKPOINT=/mnt/workspace/petvision-runs/segmentation-run/segmentation/best.pt
 export RUN_DIR=/mnt/workspace/petvision-runs/resnet50-256-color-crop-bf16-$(date +%Y%m%d-%H%M%S)-$$
 mkdir -p /mnt/workspace/petvision-runs
 mkdir "$RUN_DIR"
@@ -412,9 +412,8 @@ tail -f "$RUN_DIR/train.log"
 ```
 
 脚本顺序为：检查 GPU → 生成 `crop-cache.json` → 训练 crop ResNet-50。
-该实验已完成验证集和冻结后的测试集对照；预测裁剪 BF16 的测试 Accuracy
-为 93.077%，低于 raw FP32 的 93.540%，因此不进入主分类路径。`crop/best.pt`
-仍保留用于本地可视化和主体定位演示。
+结果保存在本地运行目录；该实验用于比较主体裁剪链路，详细指标和权重
+不随源代码发布。`crop/best.pt` 可用于本地可视化和主体定位演示。
 
 如果要做 oracle 诊断，不使用云端主脚本，先生成真值框：
 
@@ -575,7 +574,7 @@ raw feature (512) + guided feature (512)
 
 ```bash
 export DATA_ROOT=/mnt/workspace/petvision/data/oxford-iiit-pet
-export SEGMENTATION_CHECKPOINT=/mnt/workspace/petvision-runs/run-RPdAyBz7/segmentation/best.pt
+export SEGMENTATION_CHECKPOINT=/mnt/workspace/petvision-runs/segmentation-run/segmentation/best.pt
 export RAW_CHECKPOINT=/mnt/workspace/petvision-runs/resnet18-color-.../raw/best.pt
 export GUIDED_CHECKPOINT=/mnt/workspace/petvision-runs/resnet18-color-.../guided/best.pt
 export RUN_DIR=/mnt/workspace/petvision-runs/feature-fusion-$(date +%Y%m%d-%H%M%S)
@@ -673,10 +672,9 @@ $Results = "$HOME\Downloads\111"
 以及原图模型正确但 crop 错误的情况。softmax 得分不等于正确概率，本系统
 没有无宠物、未知品种拒识或多目标实例识别功能。
 
-单张图片演示不能替代数据集评价。raw/crop 的约 97% 是固定验证集结果；
-冻结方案后的官方测试集结果为 raw FP32 Accuracy 93.540%、Macro-F1
-93.380%。测试指标和错误案例见 `FINAL_REPORT.md` 与
-`artifacts/final_evaluation/`，不再用测试集反复选择阈值、边距和权重。
+单张图片演示不能替代数据集评价。正式评价应在方案固定后运行，并把
+生成的指标、错误案例和 checkpoint 保存在本地；不要把测试集用于反复选择
+阈值、边距和权重。
 
 ## 程序结构
 
@@ -722,18 +720,13 @@ redistributing data or trained weights.
 .venv\Scripts\python.exe -m compileall -q petvision scripts tests
 ```
 
-## 最终收尾结果
+## 最终评价工具
 
-完整结果、模型选择、测试集指标、混淆对和答辩限制见
-[`FINAL_REPORT.md`](FINAL_REPORT.md)。
-
-最终评价入口：
+最终评价脚本只保留在开源仓库中作为通用复现入口：
 
 ```powershell
 .venv\Scripts\python.exe scripts\evaluate_final.py --help
 .venv\Scripts\python.exe scripts\export_final_errors.py --help
 ```
 
-主模型测试集结果：Accuracy `93.540%`，Macro-F1 `93.380%`，Top-5
-Accuracy `99.782%`。模型权重和数据不提交到仓库，需按报告中的本地路径
-准备。
+详细实验报告、测试指标、错误案例和模型权重保存在本地，不随源代码发布。

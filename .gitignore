@@ -12,6 +12,7 @@ data/*
 .DS_Store
 artifacts/
 checkpoints/
+FINAL_REPORT.md
 
 # Experiment outputs
 *.pt
